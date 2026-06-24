@@ -1,0 +1,167 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="CurlRunner.WinUI.Pages.RequestsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:CurlRunner.WinUI.Models"
+    Loaded="Page_Loaded">
+    <Grid Padding="16" RowSpacing="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <Grid ColumnSpacing="6">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <TabView
+                x:Name="RequestTabs"
+                IsAddTabButtonVisible="True"
+                AddTabButtonClick="RequestTabs_AddTabButtonClick"
+                SelectionChanged="RequestTabs_SelectionChanged"
+                TabCloseRequested="RequestTabs_TabCloseRequested"
+                TabWidthMode="SizeToContent" />
+            <Button Grid.Column="1" Click="RenameTab_Click" ToolTipService.ToolTip="Rename request tab">
+                <SymbolIcon Symbol="Rename" />
+            </Button>
+        </Grid>
+
+        <Grid Grid.Row="1" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="110" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ComboBox x:Name="MethodCombo" SelectedIndex="0">
+                <ComboBoxItem Content="GET" /><ComboBoxItem Content="POST" /><ComboBoxItem Content="PUT" />
+                <ComboBoxItem Content="PATCH" /><ComboBoxItem Content="DELETE" /><ComboBoxItem Content="HEAD" />
+                <ComboBoxItem Content="OPTIONS" />
+            </ComboBox>
+            <TextBox x:Name="UrlBox" Grid.Column="1" PlaceholderText="https://api.example.com/resource" TextChanged="RequestField_TextChanged" />
+            <Button Grid.Column="2" Click="ParseCurl_Click" ToolTipService.ToolTip="Parse cURL into method, URL, headers, and body">
+                <StackPanel Orientation="Horizontal" Spacing="6"><SymbolIcon Symbol="Paste" /><TextBlock Text="Parse cURL" /></StackPanel>
+            </Button>
+            <Button x:Name="CancelButton" Grid.Column="3" Click="CancelButton_Click" IsEnabled="False" ToolTipService.ToolTip="Cancel request">
+                <SymbolIcon Symbol="Cancel" />
+            </Button>
+            <Button x:Name="SendButton" Grid.Column="4" Click="SendButton_Click" Style="{StaticResource AccentButtonStyle}">
+                <StackPanel Orientation="Horizontal" Spacing="6"><SymbolIcon Symbol="Send" /><TextBlock Text="Send" /></StackPanel>
+            </Button>
+        </Grid>
+
+        <InfoBar x:Name="RequestInfoBar" Grid.Row="2" IsClosable="True" IsOpen="False" Severity="Error" />
+
+        <Grid Grid.Row="3" ColumnSpacing="10">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="1.05*" /><ColumnDefinition Width="0.95*" /></Grid.ColumnDefinitions>
+
+            <Border Style="{StaticResource SurfaceBorderStyle}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions><RowDefinition Height="*" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                    <TabView x:Name="RequestEditorTabs" IsAddTabButtonVisible="False" TabWidthMode="SizeToContent">
+                        <TabViewItem Header="cURL" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                            <Grid RowSpacing="6">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                <CommandBar Background="Transparent" DefaultLabelPosition="Right">
+                                    <AppBarButton Icon="Import" Label="Import" Click="ImportCurl_Click" />
+                                    <AppBarButton Icon="Sync" Label="Build cURL" Click="BuildCurl_Click" />
+                                    <AppBarButton Icon="Save" Label="Collection" Click="SaveCollection_Click" />
+                                    <AppBarButton Icon="Delete" Label="Clear" Click="ClearRequest_Click" />
+                                </CommandBar>
+                                <TextBox x:Name="CurlBox" Grid.Row="1" Style="{StaticResource CodeTextBoxStyle}" PlaceholderText="Paste a cURL command" TextChanged="RequestField_TextChanged" />
+                            </Grid>
+                        </TabViewItem>
+                        <TabViewItem Header="Headers" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                            <Grid RowSpacing="6">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                <CommandBar Background="Transparent" DefaultLabelPosition="Right">
+                                    <AppBarButton Icon="Add" Label="Header" Click="AddHeader_Click" />
+                                    <AppBarButton Icon="Delete" Label="Clear" Click="ClearHeaders_Click" />
+                                </CommandBar>
+                                <Grid Grid.Row="1" Margin="42,0,42,0" ColumnSpacing="6">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="1*" /><ColumnDefinition Width="2*" /><ColumnDefinition Width="40" /></Grid.ColumnDefinitions>
+                                    <TextBlock Text="Name" /><TextBlock Grid.Column="1" Text="Value" />
+                                </Grid>
+                                <ListView Grid.Row="2" ItemsSource="{x:Bind HeaderRows}">
+                                    <ListView.ItemTemplate>
+                                        <DataTemplate x:DataType="models:HeaderEntry">
+                                            <Grid ColumnSpacing="6">
+                                                <Grid.ColumnDefinitions><ColumnDefinition Width="36" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="2*" /><ColumnDefinition Width="40" /></Grid.ColumnDefinitions>
+                                                <CheckBox IsChecked="{x:Bind IsEnabled, Mode=TwoWay}" VerticalAlignment="Center" />
+                                                <TextBox Grid.Column="1" Text="{x:Bind Name, Mode=TwoWay}" PlaceholderText="Content-Type" />
+                                                <TextBox Grid.Column="2" Text="{x:Bind Value, Mode=TwoWay}" PlaceholderText="application/json" />
+                                                <Button Grid.Column="3" Tag="{x:Bind}" Click="DeleteHeader_Click" ToolTipService.ToolTip="Delete header"><SymbolIcon Symbol="Delete" /></Button>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListView.ItemTemplate>
+                                </ListView>
+                            </Grid>
+                        </TabViewItem>
+                        <TabViewItem Header="Body" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                            <Grid RowSpacing="6">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                <CommandBar Background="Transparent" DefaultLabelPosition="Right">
+                                    <AppBarButton Icon="Font" Label="Beautify" Click="BeautifyBody_Click" />
+                                </CommandBar>
+                                <TextBox x:Name="BodyBox" Grid.Row="1" Style="{StaticResource CodeTextBoxStyle}" PlaceholderText="Request body" TextChanged="RequestField_TextChanged" />
+                            </Grid>
+                        </TabViewItem>
+                        <TabViewItem Header="Pre-request" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+                            <TextBox x:Name="PreRequestBox" Style="{StaticResource CodeTextBoxStyle}" PlaceholderText="set_env('timestamp', str(int(time.time())))&#x0a;log('ready')" />
+                        </TabViewItem>
+                    </TabView>
+
+                    <TextBlock x:Name="EnvironmentHintText" Grid.Row="1" TextWrapping="Wrap" />
+                    <Grid Grid.Row="2" ColumnSpacing="10" RowSpacing="6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" /><ColumnDefinition Width="1*" />
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <ToggleSwitch x:Name="VerifySslToggle" Header="Verify SSL" IsOn="True" OffContent="" OnContent="" />
+                        <ToggleSwitch x:Name="RedirectToggle" Grid.Column="1" Header="Redirects" IsOn="True" OffContent="" OnContent="" />
+                        <ToggleSwitch x:Name="AutoDecodeToggle" Grid.Column="2" Header="Auto decode" IsOn="True" OffContent="" OnContent="" />
+                        <NumberBox x:Name="TimeoutBox" Grid.Row="1" Grid.ColumnSpan="2" Width="120" HorizontalAlignment="Left" Header="Timeout (s)" Minimum="1" Maximum="3600" SpinButtonPlacementMode="Compact" Value="30" />
+                        <NumberBox x:Name="RepeatBox" Grid.Row="1" Grid.Column="2" Width="90" HorizontalAlignment="Left" Header="Repeat" Minimum="1" Maximum="1000" SpinButtonPlacementMode="Compact" Value="1" />
+                    </Grid>
+                </Grid>
+            </Border>
+
+            <Border Grid.Column="1" Style="{StaticResource SurfaceBorderStyle}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <Grid ColumnSpacing="8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock x:Name="StatusText" FontSize="18" FontWeight="SemiBold" Text="No response" />
+                        <TextBlock x:Name="TimeText" Grid.Column="1" VerticalAlignment="Center" />
+                        <TextBlock x:Name="SizeText" Grid.Column="2" VerticalAlignment="Center" />
+                        <ProgressRing x:Name="RequestProgress" Grid.Column="3" HorizontalAlignment="Right" Width="20" Height="20" IsActive="False" />
+                        <Button Grid.Column="4" Click="CopyResponse_Click" ToolTipService.ToolTip="Copy response body"><SymbolIcon Symbol="Copy" /></Button>
+                        <Button Grid.Column="5" Click="SaveResponse_Click" ToolTipService.ToolTip="Save raw response"><SymbolIcon Symbol="Save" /></Button>
+                        <Button Grid.Column="6" Click="AnalyzeResponse_Click">
+                            <StackPanel Orientation="Horizontal" Spacing="6"><SymbolIcon Symbol="Message" /><TextBlock Text="Analyze" /></StackPanel>
+                        </Button>
+                    </Grid>
+                    <Grid Grid.Row="1" ColumnSpacing="6">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                        <TextBox x:Name="ResponseSearchBox" PlaceholderText="Search current response tab" TextChanged="ResponseSearchBox_TextChanged">
+                            <TextBox.KeyboardAccelerators><KeyboardAccelerator Key="F" Modifiers="Control" Invoked="SearchAccelerator_Invoked" /></TextBox.KeyboardAccelerators>
+                        </TextBox>
+                        <ToggleButton x:Name="CaseSensitiveToggle" Grid.Column="1" Content="Aa" Click="CaseSensitiveToggle_Click" ToolTipService.ToolTip="Case-sensitive search" />
+                        <TextBlock x:Name="SearchCountText" Grid.Column="2" MinWidth="64" VerticalAlignment="Center" TextAlignment="Center" />
+                        <Button Grid.Column="3" Click="PreviousMatch_Click" ToolTipService.ToolTip="Previous match"><FontIcon Glyph="&#xE70E;" /></Button>
+                        <Button Grid.Column="4" Click="NextMatch_Click" ToolTipService.ToolTip="Next match"><FontIcon Glyph="&#xE70D;" /></Button>
+                    </Grid>
+                    <TabView x:Name="ResponseTabs" Grid.Row="2" IsAddTabButtonVisible="False" SelectionChanged="ResponseTabs_SelectionChanged" TabWidthMode="SizeToContent">
+                        <TabViewItem Header="Body" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><TextBox x:Name="ResponseBodyBox" IsReadOnly="True" Style="{StaticResource CodeTextBoxStyle}" /></TabViewItem>
+                        <TabViewItem Header="Headers" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><TextBox x:Name="ResponseHeadersBox" IsReadOnly="True" Style="{StaticResource CodeTextBoxStyle}" /></TabViewItem>
+                        <TabViewItem Header="Info" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><TextBox x:Name="ResponseInfoBox" IsReadOnly="True" Style="{StaticResource CodeTextBoxStyle}" /></TabViewItem>
+                        <TabViewItem Header="Log" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><TextBox x:Name="ResponseLogBox" IsReadOnly="True" Style="{StaticResource CodeTextBoxStyle}" /></TabViewItem>
+                        <TabViewItem Header="AI" IsClosable="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch"><TextBox x:Name="ResponseAiBox" IsReadOnly="True" Style="{StaticResource CodeTextBoxStyle}" /></TabViewItem>
+                    </TabView>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Page>

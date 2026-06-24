@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="CurlRunner.WinUI.Pages.ConverterPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Padding="20" RowSpacing="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Style="{StaticResource PageHeaderTextStyle}" Text="String / JSON Converter" />
+        <Grid Grid.Row="1" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="260" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <ComboBox x:Name="ModeCombo" SelectedIndex="0">
+                <ComboBoxItem Content="JSON Pretty" Tag="pretty" />
+                <ComboBoxItem Content="JSON Minify" Tag="minify" />
+                <ComboBoxItem Content="Input to JSON string" Tag="escape" />
+                <ComboBoxItem Content="JSON string to text" Tag="unescape" />
+                <ComboBoxItem Content="Lines to JSON array" Tag="lines" />
+            </ComboBox>
+            <Button Grid.Column="1" Click="Convert_Click" Style="{StaticResource AccentButtonStyle}" Content="Convert" />
+            <Button Grid.Column="2" Click="Swap_Click" Content="Swap" />
+            <Button Grid.Column="3" Click="Copy_Click" Content="Copy output" />
+            <Button Grid.Column="4" Click="Clear_Click" Content="Clear" />
+            <Button Grid.Column="5" Click="LoadResponse_Click" Content="Load response" />
+            <ToggleSwitch x:Name="WrapToggle" Grid.Column="6" Header="Wrap" IsOn="True" OffContent="" OnContent="" Toggled="WrapToggle_Toggled" />
+        </Grid>
+
+        <InfoBar x:Name="ConverterInfoBar" Grid.Row="2" IsClosable="True" IsOpen="False" Severity="Error" />
+
+        <Grid Grid.Row="3" ColumnSpacing="12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="*" />
+            </Grid.ColumnDefinitions>
+            <Border Style="{StaticResource SurfaceBorderStyle}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <TextBlock FontWeight="SemiBold" Text="Input" />
+                    <TextBox x:Name="InputBox" Grid.Row="1" Style="{StaticResource CodeTextBoxStyle}" TextWrapping="Wrap" />
+                </Grid>
+            </Border>
+            <Border Grid.Column="1" Style="{StaticResource SurfaceBorderStyle}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                    </Grid.RowDefinitions>
+                    <TextBlock FontWeight="SemiBold" Text="Output" />
+                    <TextBox x:Name="OutputBox" Grid.Row="1" IsReadOnly="True" Style="{StaticResource CodeTextBoxStyle}" TextWrapping="Wrap" />
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Page>

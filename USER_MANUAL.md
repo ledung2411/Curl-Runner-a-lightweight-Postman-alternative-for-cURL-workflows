@@ -595,6 +595,20 @@ Nút **Stop** yêu cầu dừng scenario.
 
 Lưu ý: request đang chạy sẽ hoàn tất, app sẽ skip group tiếp theo.
 
+### 13.7 Export report
+
+Sau khi scenario chạy xong, nhấn **Export Report** và chọn định dạng:
+
+| Định dạng | Mục đích |
+|---|---|
+| HTML Report | Báo cáo trực quan để mở bằng browser hoặc gửi cho team |
+| CSV Results | Phân tích kết quả bằng Excel hoặc Google Sheets |
+| JUnit XML | Đưa kết quả vào CI và test report viewer |
+
+Report gồm tên scenario, environment, tổng số pass/fail/skip, method, URL, status, thời gian và assertion của từng step.
+
+Để tránh lộ credential, report không lưu full curl/header hoặc giá trị biến extract. Các query parameter có tên như `token`, `key`, `secret`, `password`, `auth`, `signature` được thay bằng `[REDACTED]`.
+
 ---
 
 ## 14. API Scenario Extractors
@@ -940,7 +954,6 @@ Không nên dùng Repeat lớn trên production API.
 
 Những phần app chưa có hoặc còn MVP:
 
-- Chưa export scenario report HTML/CSV/JUnit
 - Chưa delay giữa step/group
 - Chưa data-driven test từ CSV/JSON
 - JSON path chỉ hỗ trợ dạng cơ bản
@@ -953,11 +966,10 @@ Những phần app chưa có hoặc còn MVP:
 
 Các chức năng nên thêm tiếp:
 
-1. Export report HTML/CSV/JUnit
-2. Delay per step/group
-3. Data-driven testing bằng CSV/JSON
-4. JSON schema validation
-5. OpenAPI/Postman import
-6. Per-step retry policy
-7. Scenario result history
-8. CI-friendly CLI runner cho scenario
+1. Delay per step/group
+2. Data-driven testing bằng CSV/JSON
+3. JSON schema validation
+4. OpenAPI/Postman import
+5. Per-step retry policy
+6. Scenario result history
+7. CI-friendly CLI runner cho scenario

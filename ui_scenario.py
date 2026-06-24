@@ -8,7 +8,7 @@ import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog, font as tkfont
+from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
 from typing import TYPE_CHECKING, Any
 
 from constants import (
@@ -19,6 +19,7 @@ from constants import (
 )
 from core import apply_env, parse_curl, execute_request, decode_response
 import store
+from scenario_report import build_scenario_report, export_scenario_report
 from ui_theme import apply_modern_theme
 
 if TYPE_CHECKING:
@@ -82,6 +83,7 @@ class ScenarioWindow(tk.Toplevel):
         self.run_btn = self._mkbtn(tb, "Run Scenario", self._run_scenario, side="right", pad=(0, 12))
         self.stop_btn = self._mkbtn(tb, "Stop", self._stop_run, side="right", pad=(0, 6))
         self.stop_btn.config(state="disabled")
+        self.export_btn = self._mkbtn(tb, "Export Report", self._show_export_menu, side="right", pad=(0, 6))
 
         main = tk.PanedWindow(self, orient="horizontal", bg=BORDER,
                               sashwidth=5, sashrelief="flat", bd=0)
@@ -715,6 +717,58 @@ class ScenarioWindow(tk.Toplevel):
             return left <= right
         return False
 
+    # Report export
+    def _show_export_menu(self) -> None:
+        menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, activebackground=ACCENT)
+        menu.add_command(label="HTML Report", command=lambda: self._export_report("html"))
+        menu.add_command(label="CSV Results", command=lambda: self._export_report("csv"))
+        menu.add_command(label="JUnit XML", command=lambda: self._export_report("xml"))
+        x = self.export_btn.winfo_rootx()
+        y = self.export_btn.winfo_rooty() + self.export_btn.winfo_height()
+        menu.tk_popup(x, y)
+
+    def _export_report(self, extension: str) -> None:
+        if self.running:
+            messagebox.showinfo("Export Report", "Wait for the scenario run to finish before exporting.")
+            return
+        completed = [result for result in self.step_results.values() if result.get("ok") is not None]
+        if not completed:
+            messagebox.showinfo("Export Report", "Run the scenario before exporting a report.")
+            return
+
+        scenario = self._current_scenario()
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(scenario.get("name", "scenario"))).strip("-.")
+        safe_name = safe_name or "scenario"
+        file_types = {
+            "html": [("HTML Report", "*.html")],
+            "csv": [("CSV Results", "*.csv")],
+            "xml": [("JUnit XML", "*.xml")],
+        }
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Scenario Report",
+            initialfile=f"{safe_name}-report.{extension}",
+            defaultextension=f".{extension}",
+            filetypes=file_types[extension] + [("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            report = build_scenario_report(
+                scenario,
+                self.step_results,
+                environment=self.parent_app.active_env,
+                summary=str(self.summary_lbl.cget("text")),
+            )
+            output = export_scenario_report(report, path)
+        except Exception as exc:
+            messagebox.showerror("Export Report", str(exc) or exc.__class__.__name__)
+            return
+
+        self._log(f"Exported {extension.upper()} report: {output.name}", "ok")
+        messagebox.showinfo("Export Report", f"Report saved to:\n{output}")
+
     # Runner
     def _run_scenario(self) -> None:
         if self.running:
@@ -733,6 +787,7 @@ class ScenarioWindow(tk.Toplevel):
         self.running = True
         self.run_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
+        self.export_btn.config(state="disabled")
 
         runtime_env = dict(self.parent_app.environments.get(self.parent_app.active_env, {}))
         threading.Thread(target=self._run_worker, args=(steps, runtime_env), daemon=True).start()
@@ -800,9 +855,13 @@ class ScenarioWindow(tk.Toplevel):
                 "ok": ok,
                 "status": f"{resp.status_code} {resp.reason}",
                 "elapsed": f"{elapsed:.0f} ms",
+                "elapsed_ms": float(elapsed),
                 "tag": "ok" if ok else "err",
                 "message": f"{name}: {resp.status_code} {resp.reason} · {elapsed:.0f} ms{suffix}",
                 "extracts": extracts,
+                "extract_names": sorted(extracts),
+                "assertions": assertion_logs,
+                "error": "",
             }
         except Exception as exc:
             msg = str(exc) or repr(exc) or exc.__class__.__name__
@@ -810,21 +869,34 @@ class ScenarioWindow(tk.Toplevel):
                 "ok": False,
                 "status": "ERROR",
                 "elapsed": "",
+                "elapsed_ms": 0.0,
                 "tag": "err",
                 "message": f"{name}: ERROR · {msg}",
                 "extracts": {},
+                "extract_names": [],
+                "assertions": [],
+                "error": msg,
             }
 
     def _after_mark_group(self, steps: list[dict], status: str, elapsed: str, tag: str) -> None:
         self.after(0, lambda: [self._set_step_result(s, status, elapsed, tag) for s in steps])
 
     def _apply_step_result(self, step: dict, result: dict) -> None:
-        self._set_step_result(step, result["status"], result["elapsed"], result["tag"])
+        self._set_step_result(step, result["status"], result["elapsed"], result["tag"], result)
         self._log(result["message"], "ok" if result["ok"] else "err")
 
-    def _set_step_result(self, step: dict, status: str, elapsed: str, tag: str) -> None:
+    def _set_step_result(
+        self,
+        step: dict,
+        status: str,
+        elapsed: str,
+        tag: str,
+        details: dict | None = None,
+    ) -> None:
         step_id = step.get("id")
-        self.step_results[step_id] = {"status": status, "elapsed": elapsed, "tag": tag}
+        result = dict(details or {})
+        result.update({"status": status, "elapsed": elapsed, "tag": tag})
+        self.step_results[step_id] = result
         if not self.step_tree.exists(step_id):
             return
         values = list(self.step_tree.item(step_id, "values"))
@@ -836,6 +908,7 @@ class ScenarioWindow(tk.Toplevel):
         self.running = False
         self.run_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
+        self.export_btn.config(state="normal")
         stopped = " · stopped" if self.stop_event.is_set() else ""
         summary = f"Scenario complete: {passed} passed, {failed} failed, {started} total{stopped}."
         self.summary_lbl.config(text=summary)

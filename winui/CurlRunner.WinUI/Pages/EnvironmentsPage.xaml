@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="CurlRunner.WinUI.Pages.EnvironmentsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:CurlRunner.WinUI.Models">
+    <Grid Padding="20" RowSpacing="12">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid>
+            <TextBlock Style="{StaticResource PageHeaderTextStyle}" Text="Environments" />
+            <CommandBar HorizontalAlignment="Right" Background="Transparent" DefaultLabelPosition="Right">
+                <AppBarButton Icon="Add" Label="New" Click="NewEnvironment_Click" />
+                <AppBarButton Icon="Rename" Label="Rename" Click="RenameEnvironment_Click" />
+                <AppBarButton Icon="Delete" Label="Delete" Click="DeleteEnvironment_Click" />
+                <AppBarSeparator />
+                <AppBarButton Icon="Accept" Label="Set active" Click="SetActive_Click" />
+                <AppBarButton Icon="Save" Label="Save" Click="SaveEnvironment_Click" />
+            </CommandBar>
+        </Grid>
+        <InfoBar x:Name="EnvironmentInfoBar" Grid.Row="1" IsClosable="True" IsOpen="False" />
+        <Grid Grid.Row="2" ColumnSpacing="12">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="260" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+            <Border Style="{StaticResource SurfaceBorderStyle}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <TextBlock FontWeight="SemiBold" Text="Environments" />
+                    <ListView x:Name="EnvironmentList" Grid.Row="1" SelectionChanged="EnvironmentList_SelectionChanged" />
+                </Grid>
+            </Border>
+            <Border Grid.Column="1" Style="{StaticResource SurfaceBorderStyle}">
+                <Grid RowSpacing="8">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                    <Grid>
+                        <TextBlock x:Name="EnvironmentTitle" FontSize="18" FontWeight="SemiBold" />
+                        <Button HorizontalAlignment="Right" Click="AddVariable_Click">
+                            <StackPanel Orientation="Horizontal" Spacing="6"><SymbolIcon Symbol="Add" /><TextBlock Text="Variable" /></StackPanel>
+                        </Button>
+                    </Grid>
+                    <Grid Grid.Row="1" Margin="40,4,40,0" ColumnSpacing="8">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="1*" /><ColumnDefinition Width="2*" /><ColumnDefinition Width="40" /></Grid.ColumnDefinitions>
+                        <TextBlock Text="Variable" /><TextBlock Grid.Column="1" Text="Value" />
+                    </Grid>
+                    <ListView x:Name="VariableList" Grid.Row="2" ItemsSource="{x:Bind Variables}">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="models:EnvironmentVariableRow">
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions><ColumnDefinition Width="1*" /><ColumnDefinition Width="2*" /><ColumnDefinition Width="40" /></Grid.ColumnDefinitions>
+                                    <TextBox Text="{x:Bind Name, Mode=TwoWay}" PlaceholderText="base_url" />
+                                    <TextBox Grid.Column="1" Text="{x:Bind Value, Mode=TwoWay}" PlaceholderText="https://api.example.com" />
+                                    <Button Grid.Column="2" Tag="{x:Bind}" Click="DeleteVariable_Click" ToolTipService.ToolTip="Delete variable"><SymbolIcon Symbol="Delete" /></Button>
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </Grid>
+            </Border>
+        </Grid>
+    </Grid>
+</Page>

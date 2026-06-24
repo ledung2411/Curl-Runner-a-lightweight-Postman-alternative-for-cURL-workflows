@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+.vs/
+*.user
+winui/**/bin/
+winui/**/obj/
+winui/artifacts/
+
+build/
+dist/

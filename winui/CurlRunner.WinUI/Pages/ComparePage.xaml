@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<Page
+    x:Class="CurlRunner.WinUI.Pages.ComparePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:models="using:CurlRunner.WinUI.Models">
+    <Grid Padding="20" RowSpacing="12">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+        <Grid>
+            <TextBlock Style="{StaticResource PageHeaderTextStyle}" Text="Compare" />
+            <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="8">
+                <ProgressRing x:Name="CompareProgress" Width="20" Height="20" IsActive="False" />
+                <Button Click="AddPanel_Click">
+                    <StackPanel Orientation="Horizontal" Spacing="6"><SymbolIcon Symbol="Add" /><TextBlock Text="Panel" /></StackPanel>
+                </Button>
+                <Button Click="LoadTabs_Click">Load open tabs</Button>
+                <Button x:Name="CompareButton" Click="Compare_Click" Style="{StaticResource AccentButtonStyle}">
+                    <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8AB;" /><TextBlock Text="Compare" /></StackPanel>
+                </Button>
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" /><ColumnDefinition Width="140" /><ColumnDefinition Width="170" />
+                <ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBox x:Name="SearchBox" PlaceholderText="Search values separated by |" TextChanged="SearchBox_TextChanged" />
+            <ComboBox x:Name="ModeCombo" Grid.Column="1" SelectedIndex="0">
+                <ComboBoxItem Content="Auto" Tag="auto" /><ComboBoxItem Content="cURL" Tag="curl" />
+                <ComboBoxItem Content="JSON" Tag="json" /><ComboBoxItem Content="Text" Tag="text" />
+                <ComboBoxItem Content="String" Tag="string" />
+            </ComboBox>
+            <ComboBox x:Name="SearchScope" Grid.Column="2" SelectedIndex="0" SelectionChanged="SearchOption_Changed" />
+            <CheckBox x:Name="CaseSensitiveCheck" Grid.Column="3" VerticalAlignment="Center" Content="Aa" Click="SearchOption_Click" />
+            <CheckBox x:Name="OnlyResultsCheck" Grid.Column="4" VerticalAlignment="Center" Content="Only results" Click="SearchOption_Click" />
+            <Button Grid.Column="5" Click="PreviousMatch_Click" ToolTipService.ToolTip="Previous match"><FontIcon Glyph="&#xE70E;" /></Button>
+            <Button Grid.Column="6" Click="NextMatch_Click" ToolTipService.ToolTip="Next match"><FontIcon Glyph="&#xE70D;" /></Button>
+        </Grid>
+
+        <ScrollViewer Grid.Row="2" HorizontalScrollMode="Enabled" HorizontalScrollBarVisibility="Auto" VerticalScrollMode="Disabled" VerticalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{x:Bind Panels}">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate><ItemsStackPanel Orientation="Horizontal" /></ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="models:ComparePanelModel">
+                        <Border Width="500" Height="520" Margin="0,0,10,0" Style="{StaticResource SurfaceBorderStyle}">
+                            <Grid RowSpacing="8">
+                                <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="170" /><RowDefinition Height="Auto" /><RowDefinition Height="*" /></Grid.RowDefinitions>
+                                <Grid>
+                                    <TextBlock VerticalAlignment="Center" FontWeight="SemiBold" Text="{x:Bind Name, Mode=OneWay}" />
+                                    <StackPanel HorizontalAlignment="Right" Orientation="Horizontal" Spacing="4">
+                                        <Button Tag="{x:Bind}" Click="RenamePanel_Click" ToolTipService.ToolTip="Rename panel"><SymbolIcon Symbol="Rename" /></Button>
+                                        <Button Tag="{x:Bind}" Click="RemovePanel_Click" ToolTipService.ToolTip="Remove panel"><SymbolIcon Symbol="Delete" /></Button>
+                                    </StackPanel>
+                                </Grid>
+                                <TextBox Grid.Row="1" Text="{x:Bind Input, Mode=TwoWay}" Style="{StaticResource CodeTextBoxStyle}" />
+                                <TextBlock Grid.Row="2" FontWeight="SemiBold" Text="Diff view" />
+                                <TextBox
+                                    x:Name="PanelOutput"
+                                    Grid.Row="3"
+                                    Tag="{x:Bind}"
+                                    IsReadOnly="True"
+                                    Style="{StaticResource CodeTextBoxStyle}"
+                                    Text="{x:Bind Output, Mode=OneWay}"
+                                    Loaded="PanelOutput_Loaded"
+                                    Unloaded="PanelOutput_Unloaded" />
+                            </Grid>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </Grid>
+</Page>

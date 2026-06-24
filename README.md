@@ -9,6 +9,21 @@
 
 ---
 
+## Native WinUI 3 Preview
+
+Nhánh mã nguồn hiện có thêm bản migration native tại
+[`winui/CurlRunner.WinUI`](winui/CurlRunner.WinUI), sử dụng Windows App SDK và
+các control theo cấu trúc của
+[WinUI Gallery](https://github.com/microsoft/WinUI-Gallery/tree/main).
+
+Bản WinUI đã có app shell, request tabs/builder, History, Collections,
+Environments, AI Ollama/OpenAI, Scenario Extractors/Assertions/Reports, Compare,
+Converter và Settings. Xem checklist feature parity tại
+[`WINUI_MIGRATION_CHECKLIST.md`](WINUI_MIGRATION_CHECKLIST.md), cùng yêu cầu môi
+trường và lệnh build tại [`winui/README.md`](winui/README.md).
+
+---
+
 ## 📸 Screenshot
 
 ![Curl Runner Screenshot](screenshotv3.png)
@@ -32,6 +47,7 @@ Xem hướng dẫn chi tiết tại [USER_MANUAL.md](USER_MANUAL.md).
 | ✨ **Beautify Body** | Format JSON body trong curl thành dạng dễ đọc |
 | 🔁 **Auto call N times** | Tự động gọi cùng request nhiều lần để test retry, cache, rate limit |
 | ▶ **API Scenario** | Lưu workflow nhiều API, chạy group tuần tự và step cùng group song song |
+| 📊 **Scenario Report** | Export kết quả scenario sang HTML, CSV hoặc JUnit XML cho tester và CI |
 | ⇄ **Compare đa loại** | So sánh Curl, JSON, Text/String với highlight khác biệt |
 | ⇆ **String/JSON Converter** | Pretty/minify JSON, escape/unescape JSON string, lines to JSON array |
 | 📋 **History** | Tự động lưu lịch sử request, tìm kiếm, tái sử dụng |
@@ -328,6 +344,7 @@ Ví dụ:
 - **Import Open Tabs** để tạo step từ các tab curl đang mở
 - **Run Scenario** để chạy workflow
 - **Stop** để dừng trước group tiếp theo
+- **Export Report** để lưu kết quả dưới dạng HTML, CSV hoặc JUnit XML
 - **Stop on fail** để tự dừng scenario nếu một step lỗi
 
 Kết quả chạy hiển thị trực tiếp trên bảng step và vùng log. Mỗi step có status, thời gian chạy, pass/fail.
@@ -387,9 +404,18 @@ Nếu một assertion fail, step fail. Nếu bật **Stop on fail**, scenario d�
 
 Các phần nên thêm tiếp theo:
 
-- Export report HTML/CSV/JUnit
 - Delay giữa các group/step
 - Chạy scenario theo data CSV/JSON
+
+#### Export Scenario Report
+
+Sau khi scenario chạy xong, nhấn **Export Report** và chọn:
+
+- **HTML Report**: báo cáo dễ đọc để gửi hoặc lưu artifact
+- **CSV Results**: dữ liệu dạng bảng để phân tích bằng Excel/Google Sheets
+- **JUnit XML**: tích hợp CI và test report viewer
+
+Report chỉ chứa method, URL đã redact query nhạy cảm, status, thời gian, assertion và tên biến extract. App không export header, full curl hoặc giá trị token/secret đã extract.
 
 ### Tìm kiếm trong response
 
@@ -536,7 +562,9 @@ Curl-runner/
 ├── ui_converter.py      # Convert String / JSON popup
 ├── ui_ollama_setup.py   # Ollama local AI setup popup
 ├── ui_scenario.py       # API Scenario runner
+├── scenario_report.py   # HTML / CSV / JUnit report exporters
 ├── ui_widgets.py        # Shared UI widgets
+├── tests/               # Standard-library unit tests
 ├── requirements.txt     # Runtime/build dependencies
 ├── CurlRunner.spec      # PyInstaller spec
 └── README.md
@@ -612,6 +640,7 @@ Thêm vào `.vscode/settings.json` để tắt Pylance warnings với tkinter:
 - [x] API Scenario sequential/parallel groups
 - [x] API Scenario extract variables
 - [x] API Scenario assertions
+- [x] API Scenario report HTML / CSV / JUnit XML
 - [x] So sánh Curl / JSON / Text / String (diff n panels)
 - [x] Tìm kiếm trong response (Ctrl+F)
 - [x] AI phân tích lỗi response bằng Ollama local
