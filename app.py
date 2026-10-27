@@ -26,8 +26,8 @@ from constants import (
 )
 from models import RequestTab
 from core import (
-    apply_env, run_pre_script,
-    parse_curl, execute_request,
+    apply_env, run_pre_script, has_executable_code,
+    parse_curl, execute_request, DEFAULT_TIMEOUT,
     decode_response, beautify_curl_body,
     build_ai_response_context, analyze_response_with_ai,
     analyze_response_with_ollama, get_ollama_status,
@@ -447,6 +447,8 @@ class CurlRunnerApp(tk.Tk):
         self._update_env_hint()
 
     def _open_env_editor(self):
+        # Chỉnh sửa trên bản nháp; chỉ áp dụng khi bấm "Lưu & Đóng".
+        draft = {name: dict(values) for name, values in self.environments.items()}
         win = tk.Toplevel(self)
         win.title("Environment Manager")
         win.configure(bg=BG); win.geometry("640x480"); win.grab_set()
@@ -457,25 +459,41 @@ class CurlRunnerApp(tk.Tk):
                  bg=BG, fg=TEXT_DIM).pack(side="left")
         env_sel = tk.StringVar(value=self.active_env)
         env_cb  = ttk.Combobox(top, textvariable=env_sel,
-                                values=list(self.environments.keys()),
+                                values=list(draft.keys()),
                                 state="readonly", font=self.fn_label, width=18)
         env_cb.pack(side="left", padx=6)
+
+        # Environment đang hiển thị trong bảng; dùng để không mất các chỉnh sửa
+        # chưa lưu khi người dùng chuyển sang environment khác.
+        editing = {"name": env_sel.get()}
+
+        def commit_tree():
+            name = editing["name"]
+            if name not in draft:
+                return
+            rows = {}
+            for iid in tree.get_children():
+                k, v = (str(x) for x in tree.item(iid, "values"))
+                if k.strip():
+                    rows[k.strip()] = v
+            draft[name] = rows
 
         def new_env():
             n = simpledialog.askstring("Tên","Tên environment mới:", parent=win)
             if n and n.strip():
-                self.environments.setdefault(n.strip(),{})
-                env_cb["values"] = list(self.environments.keys())
+                commit_tree()
+                draft.setdefault(n.strip(),{})
+                env_cb["values"] = list(draft.keys())
                 env_sel.set(n.strip()); load_vars()
 
         def del_env():
             n = env_sel.get()
-            if len(self.environments) <= 1:
+            if len(draft) <= 1:
                 messagebox.showinfo("","Phải giữ ít nhất 1."); return
             if messagebox.askyesno("Xác nhận", f"Xóa '{n}'?", parent=win):
-                self.environments.pop(n, None)
-                env_cb["values"] = list(self.environments.keys())
-                env_sel.set(list(self.environments.keys())[0]); load_vars()
+                draft.pop(n, None)
+                env_cb["values"] = list(draft.keys())
+                env_sel.set(list(draft.keys())[0]); load_vars()
 
         self._mkbtn(top, "＋ Mới", new_env, side="left", pad=(4,0))
         self._mkbtn(top, "🗑",     del_env, side="left", pad=(4,0))
@@ -492,18 +510,21 @@ class CurlRunnerApp(tk.Tk):
         vsb.pack(side="right", fill="y"); tree.pack(fill="both", expand=True)
 
         def load_vars():
+            editing["name"] = env_sel.get()
             tree.delete(*tree.get_children())
-            for k, v in self.environments.get(env_sel.get(),{}).items():
+            for k, v in draft.get(env_sel.get(),{}).items():
                 tree.insert("","end", values=(k,v))
 
-        env_cb.bind("<<ComboboxSelected>>", lambda e: load_vars())
+        env_cb.bind("<<ComboboxSelected>>", lambda e: (commit_tree(), load_vars()))
         load_vars()
 
         def edit_cell(event):
             iid = tree.identify_row(event.y)
             col = tree.identify_column(event.x)
             if not iid: return
-            x,y,w,h = tree.bbox(iid,col)
+            bbox = tree.bbox(iid, col)
+            if not bbox: return
+            x,y,w,h = bbox
             col_idx  = int(col[1:])-1
             val      = tree.item(iid,"values")[col_idx]
             ent = tk.Entry(tbl, font=self.fn_label, bg=BG3, fg=TEXT,
@@ -524,10 +545,8 @@ class CurlRunnerApp(tk.Tk):
 
         def save_close():
             env_name = env_sel.get()
-            self.environments[env_name] = {}
-            for iid in tree.get_children():
-                k,v = tree.item(iid,"values")
-                if k.strip(): self.environments[env_name][k.strip()] = v
+            commit_tree()
+            self.environments = draft
             store.save_environments(self.environments)
             self._refresh_env_selector()
             self.active_env = env_name
@@ -1128,6 +1147,16 @@ class CurlRunnerApp(tk.Tk):
                 tab._body_builder_tw.insert("1.0", self._body_to_builder_text(parsed.get("body")))
         finally:
             tab._syncing_builder = False
+        body = parsed.get("body")
+        # Những gì Request builder không hiển thị được: giữ lại để lúc gửi/lưu không bị mất.
+        tab._parsed_extras = {
+            "auth": parsed.get("auth"),
+            "verify_ssl": parsed.get("verify_ssl", True),
+            "timeout": parsed.get("timeout", DEFAULT_TIMEOUT),
+            "body": None if body is None or isinstance(body, str) else body,
+            "body_text": self._body_to_builder_text(body),
+            "body_file": parsed.get("body_file"),
+        }
         tab._builder_dirty = dirty
         tab.builder_dirty = dirty
         self._save_builder_state(tab)
@@ -1173,16 +1202,35 @@ class CurlRunnerApp(tk.Tk):
         headers_text = apply_env(tab.builder_headers, env)
         body_text = apply_env(tab.builder_body, env)
         body = body_text if body_text else None
+        extras = getattr(tab, "_parsed_extras", None) or {}
+        original_body = extras.get("body")
+        if isinstance(original_body, dict) and self._looks_like_form(body_text):
+            body = self._form_from_builder_text(body_text) or None
+        elif isinstance(original_body, bytes) and tab.builder_body == extras.get("body_text"):
+            body = original_body   # body nhị phân: builder chỉ hiển thị bản tóm tắt
         return {
             "method": method,
             "url": url,
             "headers": self._parse_headers_editor(headers_text),
             "body": body,
-            "auth": None,
-            "verify_ssl": True,
+            "auth": extras.get("auth"),
+            "verify_ssl": extras.get("verify_ssl", True),
             "allow_redirects": True,
-            "timeout": 30,
+            "timeout": extras.get("timeout", DEFAULT_TIMEOUT),
         }
+
+    def _looks_like_form(self, text: str) -> bool:
+        """Body của curl -F hiển thị dạng `key=value` mỗi dòng; JSON/text tự do thì không."""
+        lines = [line for line in (text or "").splitlines() if line.strip()]
+        return all("=" in line for line in lines) and not (text or "").lstrip().startswith(("{", "["))
+
+    def _form_from_builder_text(self, text: str) -> dict[str, str]:
+        form: dict[str, str] = {}
+        for line in (text or "").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip():
+                form[key.strip()] = value
+        return form
 
     def _build_curl_from_builder(self, tab) -> str:
         self._save_builder_state(tab)
@@ -1195,8 +1243,24 @@ class CurlRunnerApp(tk.Tk):
             parts.append(shlex.quote(url))
         for key, value in self._parse_headers_editor(tab.builder_headers).items():
             parts.append(f"-H {shlex.quote(f'{key}: {value}')}")
-        if tab.builder_body.strip():
+        extras = getattr(tab, "_parsed_extras", None) or {}
+        auth = extras.get("auth")
+        if auth:
+            parts.append(f"-u {shlex.quote(':'.join(str(x) for x in auth))}")
+        original_body = extras.get("body")
+        if isinstance(original_body, dict) and self._looks_like_form(tab.builder_body):
+            for key, value in self._form_from_builder_text(tab.builder_body).items():
+                parts.append(f"-F {shlex.quote(f'{key}={value}')}")
+        elif (isinstance(original_body, bytes) and extras.get("body_file")
+              and tab.builder_body == extras.get("body_text")):
+            parts.append(f"--data-binary {shlex.quote('@' + extras['body_file'])}")
+        elif tab.builder_body.strip():
             parts.append(f"--data-raw {shlex.quote(tab.builder_body.strip())}")
+        if not extras.get("verify_ssl", True):
+            parts.append("-k")
+        timeout = extras.get("timeout", DEFAULT_TIMEOUT)
+        if timeout != DEFAULT_TIMEOUT:
+            parts.append(f"--max-time {timeout:g}")
         return " \\\n  ".join(parts)
 
     def _current_raw_curl(self, tab) -> str:
@@ -1361,6 +1425,7 @@ class CurlRunnerApp(tk.Tk):
                 tab._syncing_builder = False
             tab._builder_dirty = False
             tab.builder_dirty = False
+            tab._parsed_extras = {}
             self._save_builder_state(tab)
         self._restore_ph(tab)
         tab._status_lbl.config(text="")
@@ -1408,17 +1473,22 @@ class CurlRunnerApp(tk.Tk):
         env = dict(self.environments.get(self.active_env,{}))
         pre_script = tab._pre_tw.get("1.0","end").strip() if hasattr(tab,"_pre_tw") else ""
         pre_logs = []
-        if pre_script and not pre_script.startswith("#"):
+        if has_executable_code(pre_script):
             env, pre_logs = run_pre_script(pre_script, env)
             tab.pre_logs = pre_logs
 
         try:
             parsed = None
             parsed, original_curl = self._prepare_request_from_tab(tab, env)
-            parsed["verify_ssl"]      = tab._var_ssl.get()
+            # -k / --max-time trong curl được ưu tiên hơn giá trị mặc định của các ô option.
+            parsed["verify_ssl"]      = bool(parsed.get("verify_ssl", True)) and tab._var_ssl.get()
             parsed["allow_redirects"] = tab._var_redirect.get()
-            try:    parsed["timeout"] = float(tab._timeout_var.get())
-            except: parsed["timeout"] = 30
+            if parsed.get("timeout", DEFAULT_TIMEOUT) == DEFAULT_TIMEOUT:
+                try:
+                    timeout = float(tab._timeout_var.get())
+                except ValueError:
+                    timeout = DEFAULT_TIMEOUT
+                parsed["timeout"] = timeout if timeout > 0 else DEFAULT_TIMEOUT
         except Exception as e:
             messagebox.showwarning("Request không hợp lệ", str(e)); return
 
@@ -1787,6 +1857,9 @@ class CurlRunnerApp(tk.Tk):
         self._schedule_response_search()
 
     # ── Display response ──────────────────────
+    def _is_active_tab(self, tab) -> bool:
+        return 0 <= self.active_tab_idx < len(self.tabs) and self.tabs[self.active_tab_idx] is tab
+
     def _display(self, tab, parsed, resp, elapsed, original_curl, pre_logs, repeat_count: int = 1):
         tab.response = resp
         tab.parsed   = parsed
@@ -1795,38 +1868,29 @@ class CurlRunnerApp(tk.Tk):
         tab.ai_analysis = ""
 
         sc   = resp.status_code
-        size = len(resp.content)
-        self.status_badge.config(text=f"{sc} {resp.reason}", bg=status_color(sc), fg=STATUS_TEXT)
-        self.time_label.config(text=f"{elapsed:.0f} ms", fg=YELLOW_C)
-        sz = f"{size:,} B" if size < 1024 else f"{size/1024:.1f} KB"
-        self.size_label.config(text=sz, fg=TEXT_DIM)
-
-        ct_header = resp.headers.get("Content-Type","")
         body_text, enc_info = decode_response(resp, tab._var_decode.get())
 
         tab.body_text    = body_text
         tab.detected_enc = enc_info
 
-        self._write_body(body_text, ct_header)
-        self._write_headers(resp.headers)
-        self._write_info(parsed, resp, elapsed, enc_info)
-        self._write_log(pre_logs)
-        self._write_ai_analysis("")
-        self._schedule_response_search()
+        if tab in self.tabs:   # tab có thể đã bị đóng trong lúc request đang chạy
+            tab._send_btn.config(state="normal", text="▶  SEND REQUEST")
+            url_s = parsed['url'][:52] + ("..." if len(parsed['url'])>52 else "")
+            if repeat_count > 1:
+                tab._status_lbl.config(
+                    text=f"✓  Auto call complete: {repeat_count}x  ·  latest {parsed['method']} → {url_s}",
+                    fg=GREEN
+                )
+            else:
+                tab._status_lbl.config(text=f"✓  {parsed['method']}  →  {url_s}", fg=GREEN)
 
-        tab._send_btn.config(state="normal", text="▶  SEND REQUEST")
-        url_s = parsed['url'][:52] + ("..." if len(parsed['url'])>52 else "")
-        if repeat_count > 1:
-            tab._status_lbl.config(
-                text=f"✓  Auto call complete: {repeat_count}x  ·  latest {parsed['method']} → {url_s}",
-                fg=GREEN
-            )
-        else:
-            tab._status_lbl.config(text=f"✓  {parsed['method']}  →  {url_s}", fg=GREEN)
-
-        # Auto-show Script Log tab if script ran
-        if pre_logs:
-            self._show_resp_tab("log")
+        # Chỉ vẽ lên response panel dùng chung nếu tab này vẫn đang được chọn;
+        # nếu không, response sẽ được hiển thị khi người dùng quay lại tab.
+        if self._is_active_tab(tab):
+            self._restore_response(tab)
+            # Auto-show Script Log tab if script ran
+            if pre_logs:
+                self._show_resp_tab("log")
 
         # History
         self.history.append({
@@ -2120,26 +2184,32 @@ class CurlRunnerApp(tk.Tk):
 
     def _finish_ai_analysis(self, tab, result: str, error: str | None):
         self.ai_analyze_btn.config(state="normal", text="AI Analyze")
+        if tab not in self.tabs:
+            return
         if error:
             if error == "None":
                 error = "Unknown OpenAI API error. Please try again; the next run will include HTTP details."
             tab.ai_analysis = f"AI analysis failed:\n{error}"
             tab._status_lbl.config(text=f"AI analysis failed: {error[:70]}", fg=RED_C)
-            if self.active_tab_idx >= 0 and self.tabs[self.active_tab_idx] is tab:
+            if self._is_active_tab(tab):
                 self._show_resp_tab("ai")
                 self._write_ai_analysis(tab.ai_analysis, "err")
             return
 
         tab.ai_analysis = result
         tab._status_lbl.config(text="AI analysis complete", fg=GREEN)
-        if self.active_tab_idx >= 0 and self.tabs[self.active_tab_idx] is tab:
+        if self._is_active_tab(tab):
             self._show_resp_tab("ai")
             self._write_ai_analysis(result)
 
     def _show_error(self, tab, msg):
+        if tab not in self.tabs:
+            return
         tab._send_btn.config(state="normal", text="▶  SEND REQUEST")
-        self.status_badge.config(text="ERROR", bg=RED_C, fg=STATUS_TEXT)
         tab._status_lbl.config(text=f"❌ {msg[:80]}", fg=RED_C)
+        if not self._is_active_tab(tab):
+            return
+        self.status_badge.config(text="ERROR", bg=RED_C, fg=STATUS_TEXT)
         self._write_body(f"[LỖI]\n{msg}", "text/plain")
         self._schedule_response_search()
 

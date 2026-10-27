@@ -211,7 +211,9 @@ class ConverterWindow(tk.Toplevel):
             try:
                 value = json.loads(f'"{text}"')
             except Exception:
-                value = bytes(text, "utf-8").decode("unicode_escape")
+                # backslashreplace giữ ký tự ngoài latin-1 (tiếng Việt, emoji) dưới dạng \uXXXX
+                # để unicode_escape giải mã lại đúng, thay vì biến thành mojibake.
+                value = text.encode("latin-1", "backslashreplace").decode("unicode_escape")
 
         if not isinstance(value, str):
             return json.dumps(value, indent=2, ensure_ascii=False)

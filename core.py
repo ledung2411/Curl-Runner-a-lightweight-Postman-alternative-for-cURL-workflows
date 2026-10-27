@@ -4,21 +4,20 @@ from __future__ import annotations
 
 import re
 import json
-import shlex
 import time
 import os
 import shutil
-import subprocess
-import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from typing import Any
 
 try:
     import requests
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "requests"])
-    import requests  # type: ignore
+except ImportError as exc:  # pragma: no cover - depends on the local install
+    # Never pip-install silently at import time; tell the user what to run instead.
+    raise ImportError(
+        "Thiếu thư viện 'requests'. Chạy: pip install -r requirements.txt"
+    ) from exc
 
 try:
     from charset_normalizer import from_bytes as _detect_encoding
@@ -439,16 +438,28 @@ def analyze_response_with_ollama(
 def apply_env(text: str, env: dict[str, str]) -> str:
     """Thay thế {{key}} bằng giá trị trong env dict."""
     for k, v in env.items():
-        text = text.replace("{{" + k + "}}", v)
+        text = text.replace("{{" + str(k) + "}}", "" if v is None else str(v))
     return text
 
 
 # ──────────────────────────────────────────────
 # Pre-request script
 # ──────────────────────────────────────────────
+def has_executable_code(script: str) -> bool:
+    """True nếu script có ít nhất 1 dòng không phải comment/dòng trống."""
+    return any(
+        line.strip() and not line.strip().startswith("#")
+        for line in (script or "").splitlines()
+    )
+
+
 def run_pre_script(script: str, env: dict[str, str]) -> tuple[dict, list[str]]:
     """
-    Chạy pre-request Python script trong sandbox an toàn.
+    Chạy pre-request Python script.
+
+    LƯU Ý: đây KHÔNG phải sandbox — script chạy với toàn quyền của app
+    (có thể import os, đọc/ghi file...). Chỉ chạy script do chính bạn viết
+    hoặc đã đọc kỹ, đặc biệt khi import collection/scenario của người khác.
 
     API dùng được trong script:
       set_env('key', 'value')  → set biến env
@@ -479,8 +490,10 @@ def run_pre_script(script: str, env: dict[str, str]) -> tuple[dict, list[str]]:
     }
     try:
         exec(compile(script, "<pre-request>", "exec"), sandbox)
-        for k, v in sandbox["env"].items():
-            local_env[k] = v
+        # Script có thể gán lại `env = {...}` hoặc `env['n'] = 5`; giá trị phải là str
+        # để apply_env() không lỗi TypeError.
+        for k, v in dict(sandbox.get("env") or {}).items():
+            local_env[str(k)] = "" if v is None else str(v)
         logs.insert(0, "✅ Script chạy thành công")
     except Exception as e:
         logs.insert(0, f"❌ Script lỗi: {e}")
@@ -491,101 +504,441 @@ def run_pre_script(script: str, env: dict[str, str]) -> tuple[dict, list[str]]:
 # ──────────────────────────────────────────────
 # Curl parser
 # ──────────────────────────────────────────────
+DEFAULT_TIMEOUT = 30
+
+_SHELL_WHITESPACE = " \t\r\n"
+_DQ_ESCAPABLE = '"\\$`\n'   # ký tự mà `\` escape được bên trong "..." (POSIX shell)
+_ANSI_C_SIMPLE = {
+    "n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "f": "\f",
+    "v": "\v", "e": "\x1b", "E": "\x1b", "\\": "\\", "'": "'", '"': '"', "?": "?",
+}
+
+# Short options của curl nhận giá trị (ví dụ -XPOST, -H 'A: b', -sSL không có giá trị)
+_SHORT_WITH_VALUE = set("AbcCdDeEFHKmoPQrtTuUwxXyYz")
+# Long options nhận giá trị. Những option app không dùng vẫn phải nằm ở đây để
+# giá trị của chúng không bị hiểu nhầm thành URL (vd: `curl -o out.txt https://...`).
+_LONG_WITH_VALUE = {
+    "--request", "--header", "--data", "--data-raw", "--data-ascii", "--data-binary",
+    "--data-urlencode", "--json", "--form", "--form-string", "--user-agent", "--user",
+    "--url", "--max-time", "--oauth2-bearer", "--cookie", "--referer",
+    "--connect-timeout", "--output", "--write-out", "--proxy", "--proxy-user",
+    "--cacert", "--capath", "--cert", "--key", "--cert-type", "--key-type", "--pass",
+    "--resolve", "--connect-to", "--cookie-jar", "--range", "--retry", "--retry-delay",
+    "--retry-max-time", "--upload-file", "--config", "--limit-rate", "--speed-limit",
+    "--speed-time", "--interface", "--dns-servers", "--max-redirs", "--proto",
+    "--proto-redir", "--keepalive-time", "--unix-socket", "--abstract-unix-socket",
+    "--ciphers", "--noproxy", "--preproxy", "--socks4", "--socks4a", "--socks5",
+    "--socks5-hostname", "--time-cond", "--expect100-timeout", "--trace",
+    "--trace-ascii", "--stderr", "--dump-header", "--continue-at", "--local-port",
+    "--request-target", "--aws-sigv4", "--url-query", "--variable", "--header-file",
+    "--max-filesize", "--happy-eyeballs-timeout-ms", "--telnet-option", "--quote",
+}
+_SHORT_TO_LONG = {
+    "-X": "--request", "-H": "--header", "-d": "--data", "-F": "--form",
+    "-A": "--user-agent", "-u": "--user", "-m": "--max-time", "-b": "--cookie",
+    "-e": "--referer", "-k": "--insecure", "-L": "--location", "-G": "--get",
+    "-I": "--head",
+}
+_DATA_OPTIONS = {"--data", "--data-ascii", "--data-raw", "--data-binary", "--data-urlencode", "--json"}
+
+
+def _decode_ansi_c(raw: str) -> str:
+    """Giải mã nội dung của bash ANSI-C quote $'...' (Chrome "Copy as cURL (bash)" dùng dạng này)."""
+    out = bytearray()
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if ch != "\\" or i + 1 >= len(raw):
+            out += ch.encode("utf-8")
+            i += 1
+            continue
+        nxt = raw[i + 1]
+        if nxt in _ANSI_C_SIMPLE:
+            out += _ANSI_C_SIMPLE[nxt].encode("utf-8")
+            i += 2
+        elif nxt == "x" and (m := re.match(r"[0-9A-Fa-f]{1,2}", raw[i + 2:])):
+            out.append(int(m.group(), 16))
+            i += 2 + len(m.group())
+        elif nxt in "uU" and (m := re.match(r"[0-9A-Fa-f]{1,%d}" % (4 if nxt == "u" else 8), raw[i + 2:])):
+            code = min(int(m.group(), 16), 0x10FFFF)
+            out += chr(code).encode("utf-8", "surrogatepass")
+            i += 2 + len(m.group())
+        elif nxt in "01234567":
+            m = re.match(r"[0-7]{1,3}", raw[i + 1:])
+            out.append(int(m.group(), 8) & 0xFF)
+            i += 1 + len(m.group())
+        else:
+            out += ("\\" + nxt).encode("utf-8")
+            i += 2
+    return out.decode("utf-8", errors="replace")
+
+
+def shell_split(text: str) -> list[str]:
+    """
+    Tách chuỗi theo quy tắc POSIX shell (giống bash), hỗ trợ thêm $'...'.
+
+    Khác shlex.split: bên trong "..." chỉ \\" \\\\ \\$ \\` được escape (như bash),
+    và hiểu được ANSI-C quoting mà Chrome DevTools sinh ra.
+    """
+    tokens: list[str] = []
+    buf: list[str] = []
+    in_token = False
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in _SHELL_WHITESPACE:
+            if in_token:
+                tokens.append("".join(buf))
+                buf, in_token = [], False
+            i += 1
+            continue
+        in_token = True
+        if ch == "\\":
+            if i + 1 < n:
+                if text[i + 1] != "\n":   # backslash-newline = nối dòng
+                    buf.append(text[i + 1])
+                i += 2
+            else:
+                buf.append(ch)
+                i += 1
+        elif ch == "'":
+            end = text.find("'", i + 1)
+            if end < 0:
+                raise ValueError("Thiếu dấu ' đóng")
+            buf.append(text[i + 1:end])
+            i = end + 1
+        elif ch == '"':
+            i += 1
+            while True:
+                if i >= n:
+                    raise ValueError('Thiếu dấu " đóng')
+                c = text[i]
+                if c == '"':
+                    i += 1
+                    break
+                if c == "\\" and i + 1 < n and text[i + 1] in _DQ_ESCAPABLE:
+                    if text[i + 1] != "\n":
+                        buf.append(text[i + 1])
+                    i += 2
+                    continue
+                buf.append(c)
+                i += 1
+        elif ch == "$" and i + 1 < n and text[i + 1] == "'":
+            j, raw = i + 2, []
+            while True:
+                if j >= n:
+                    raise ValueError("Thiếu dấu ' đóng cho $'...'")
+                c = text[j]
+                if c == "\\" and j + 1 < n:
+                    raw.append(text[j:j + 2])
+                    j += 2
+                    continue
+                if c == "'":
+                    j += 1
+                    break
+                raw.append(c)
+                j += 1
+            buf.append(_decode_ansi_c("".join(raw)))
+            i = j
+        else:
+            buf.append(ch)
+            i += 1
+    if in_token:
+        tokens.append("".join(buf))
+    return tokens
+
+
+def _normalize_curl_text(curl_string: str) -> str:
+    text = re.sub(r'\\\s*\n\s*', ' ', curl_string or "")   # nối dòng bash
+    text = re.sub(r'\^\s*\n\s*', ' ', text)                 # nối dòng cmd.exe
+    text = text.strip()
+    # Chrome "Copy as cURL (cmd)" escape mọi ký tự đặc biệt bằng ^ và bọc giá trị trong ^"...^"
+    if re.search(r'(?<!\S)\^"', text):
+        text = re.sub(r'\^(.)', r'\1', text)
+    return text
+
+
+def _iter_curl_options(args: list[str]):
+    """Yield (option, value). option=None nghĩa là đối số vị trí (URL)."""
+    i = 0
+    positional_only = False
+    while i < len(args):
+        token = args[i]
+        i += 1
+        if positional_only or token == "-" or not token.startswith("-"):
+            yield None, token
+            continue
+        if token == "--":
+            positional_only = True
+            continue
+        if token.startswith("--"):
+            name = token
+            if name.startswith("--no-"):
+                yield name, None
+                continue
+            if name in _LONG_WITH_VALUE:
+                if i >= len(args):
+                    raise ValueError(f"Option {name} thiếu giá trị")
+                yield name, args[i]
+                i += 1
+            else:
+                yield name, None
+            continue
+        # Short options: -sSL, -XPOST, -H 'A: b', -d@file.json
+        pos = 1
+        while pos < len(token):
+            letter = token[pos]
+            name = _SHORT_TO_LONG.get(f"-{letter}", f"-{letter}")
+            if letter in _SHORT_WITH_VALUE:
+                value = token[pos + 1:]
+                if not value:
+                    if i >= len(args):
+                        raise ValueError(f"Option -{letter} thiếu giá trị")
+                    value = args[i]
+                    i += 1
+                yield name, value
+                break
+            yield name, None
+            pos += 1
+
+
+def _read_data_file(path: str) -> bytes:
+    if path == "-":
+        raise ValueError("Không hỗ trợ đọc body từ stdin (@-)")
+    try:
+        with open(path, "rb") as fh:
+            return fh.read()
+    except OSError as exc:
+        raise ValueError(f"Không đọc được file dữ liệu `{path}`: {exc}") from exc
+
+
+def _data_part(option: str, value: str) -> str | bytes:
+    """Chuyển 1 lần dùng -d/--data-*/--json thành nội dung body giống curl."""
+    if option == "--data-urlencode":
+        name, sep, content = value.partition("=")
+        if not sep:
+            if "@" in value:
+                name, _, path = value.partition("@")
+                content = _read_data_file(path).decode("utf-8", errors="replace")
+                return f"{name}={quote(content, safe='')}" if name else quote(content, safe="")
+            return quote(value, safe="")
+        encoded = quote(content, safe="")
+        return f"{name}={encoded}" if name else encoded
+    if option == "--data-raw" or not value.startswith("@"):
+        return value
+    raw = _read_data_file(value[1:])
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw
+    if option in ("--data", "--data-ascii"):
+        # curl -d @file bỏ CR/LF trong file; --data-binary giữ nguyên.
+        text = text.replace("\r", "").replace("\n", "")
+    return text
+
+
+def _join_data_parts(parts: list[str | bytes], separator: str) -> str | bytes:
+    if len(parts) == 1:
+        return parts[0]
+    if any(isinstance(p, bytes) for p in parts):
+        return separator.encode().join(p if isinstance(p, bytes) else p.encode("utf-8") for p in parts)
+    return separator.join(parts)  # type: ignore[arg-type]
+
+
+def _set_header(headers: dict[str, str], key: str, value: str) -> None:
+    """Set header không phân biệt hoa/thường (header sau ghi đè header trước)."""
+    for existing in [k for k in headers if k.lower() == key.lower()]:
+        del headers[existing]
+    headers[key] = value
+
+
+def _has_header(headers: dict[str, str], key: str) -> bool:
+    return any(k.lower() == key.lower() for k in headers)
+
+
 def parse_curl(curl_string: str) -> dict:
     """
     Parse chuỗi curl thành dict:
       method, url, headers, body, auth,
       verify_ssl, allow_redirects, timeout
+    (thêm "body_file" khi body là file nhị phân đọc từ --data-binary @file)
     """
-    curl_string = re.sub(r'\\\s*\n\s*', ' ', curl_string)
-    curl_string = re.sub(r'\^\s*\n\s*', ' ', curl_string)
-    curl_string = curl_string.strip()
-
     try:
-        tokens = shlex.split(curl_string)
+        tokens = shell_split(_normalize_curl_text(curl_string))
     except ValueError as e:
-        raise ValueError(f"Không thể parse curl: {e}")
+        raise ValueError(f"Không thể parse curl: {e}") from e
 
-    if not tokens or tokens[0].lower() != 'curl':
+    if not tokens or tokens[0].lower() not in ("curl", "curl.exe"):
         raise ValueError("Chuỗi phải bắt đầu bằng 'curl'")
 
     r: dict[str, Any] = {
         "method": None, "url": None, "headers": {}, "body": None,
-        "auth": None, "verify_ssl": True, "allow_redirects": True, "timeout": 30,
+        "auth": None, "verify_ssl": True, "allow_redirects": True,
+        "timeout": DEFAULT_TIMEOUT,
     }
-    i = 1
-    while i < len(tokens):
-        t = tokens[i]
-        if not t.startswith('-') and r["url"] is None:
-            r["url"] = t; i += 1; continue
-        if t in ('-X', '--request'):
-            i += 1; r["method"] = tokens[i].upper()
-        elif t in ('-H', '--header'):
-            i += 1
-            if ':' in tokens[i]:
-                k, _, v = tokens[i].partition(':')
-                r["headers"][k.strip()] = v.strip()
-        elif t in ('-d', '--data', '--data-raw', '--data-ascii', '--data-binary'):
-            i += 1
-            raw = tokens[i]
-            r["body"] = open(raw[1:], 'rb').read() if raw.startswith('@') else raw
-        elif t in ('-F', '--form'):
-            i += 1
-            if r["body"] is None: r["body"] = {}
-            k, _, v = tokens[i].partition('=')
-            if isinstance(r["body"], dict): r["body"][k] = v
-        elif t in ('-A', '--user-agent'):
-            i += 1; r["headers"]["User-Agent"] = tokens[i]
-        elif t in ('-u', '--user'):
-            i += 1; r["auth"] = tuple(tokens[i].split(':', 1))
-        elif t in ('-k', '--insecure'):
-            r["verify_ssl"] = False
-        elif t in ('-L', '--location'):
-            r["allow_redirects"] = True
-        elif t == '--url':
-            i += 1; r["url"] = tokens[i]
-        elif t in ('--max-time', '-m'):
-            i += 1
-            try: r["timeout"] = float(tokens[i])
-            except Exception: pass
-        elif t == '--oauth2-bearer':
-            i += 1; r["headers"]["Authorization"] = f"Bearer {tokens[i]}"
-        i += 1
+    data_parts: list[str | bytes] = []
+    data_options: list[str] = []
+    data_files: list[str] = []
+    form: dict[str, str] = {}
+    use_get = False
+    use_head = False
 
-    if r["url"] is None:    raise ValueError("Không tìm thấy URL trong chuỗi curl")
-    if r["method"] is None: r["method"] = "POST" if r["body"] else "GET"
+    for opt, value in _iter_curl_options(tokens[1:]):
+        if opt is None:
+            if r["url"] is None:
+                r["url"] = value
+        elif opt == "--request":
+            r["method"] = value.upper()
+        elif opt == "--header":
+            if value.startswith("@"):
+                continue  # header file: không hỗ trợ
+            if ":" in value:
+                k, _, v = value.partition(":")
+                if k.strip() and v.strip():
+                    _set_header(r["headers"], k.strip(), v.strip())
+            elif value.endswith(";") and value[:-1].strip():
+                _set_header(r["headers"], value[:-1].strip(), "")   # `-H 'X-Empty;'`
+        elif opt in _DATA_OPTIONS:
+            data_parts.append(_data_part(opt, value))
+            data_options.append(opt)
+            if opt not in ("--data-raw", "--data-urlencode") and value.startswith("@"):
+                data_files.append(value[1:])
+            if opt == "--json":
+                if not _has_header(r["headers"], "Content-Type"):
+                    r["headers"]["Content-Type"] = "application/json"
+                if not _has_header(r["headers"], "Accept"):
+                    r["headers"]["Accept"] = "application/json"
+        elif opt in ("--form", "--form-string"):
+            k, _, v = value.partition("=")
+            form[k] = v
+        elif opt == "--user-agent":
+            _set_header(r["headers"], "User-Agent", value)
+        elif opt == "--user":
+            user, _, password = value.partition(":")
+            r["auth"] = (user, password)
+        elif opt == "--oauth2-bearer":
+            _set_header(r["headers"], "Authorization", f"Bearer {value}")
+        elif opt == "--cookie":
+            if "=" in value:   # không có "=" nghĩa là tên file cookie → bỏ qua
+                existing = next((v for k, v in r["headers"].items() if k.lower() == "cookie"), "")
+                _set_header(r["headers"], "Cookie", f"{existing}; {value}" if existing else value)
+        elif opt == "--referer":
+            referer = value.replace(";auto", "")
+            if referer:
+                _set_header(r["headers"], "Referer", referer)
+        elif opt == "--insecure":
+            r["verify_ssl"] = False
+        elif opt == "--location":
+            r["allow_redirects"] = True
+        elif opt == "--url":
+            r["url"] = value
+        elif opt == "--max-time":
+            try:
+                r["timeout"] = float(value)
+            except ValueError:
+                pass
+        elif opt == "--get":
+            use_get = True
+        elif opt == "--head":
+            use_head = True
+        # Các option khác (-s, -v, --compressed, -o file...) không ảnh hưởng request.
+
+    if r["url"] is None:
+        raise ValueError("Không tìm thấy URL trong chuỗi curl")
+
+    if form and data_parts:
+        raise ValueError("Không thể dùng -d/--data cùng với -F/--form trong một request")
+    if form:
+        r["body"] = form
+    elif data_parts:
+        separator = "" if all(o == "--json" for o in data_options) else "&"
+        body = _join_data_parts(data_parts, separator)
+        if use_get:
+            text = body.decode("utf-8", errors="replace") if isinstance(body, bytes) else body
+            r["url"] += ("&" if "?" in r["url"] else "?") + text
+        else:
+            r["body"] = body
+            if isinstance(body, bytes) and len(data_files) == 1 and len(data_parts) == 1:
+                r["body_file"] = data_files[0]
+
+    if r["method"] is None:
+        if use_head:
+            r["method"] = "HEAD"
+        elif use_get:
+            r["method"] = "GET"
+        else:
+            r["method"] = "POST" if r["body"] is not None else "GET"
     return r
 
 
 # ──────────────────────────────────────────────
 # HTTP executor
 # ──────────────────────────────────────────────
+def _split_form_value(value: str) -> tuple[str, dict[str, str]]:
+    """'file.png;type=image/png;filename=a.png' → ('file.png', {'type':..., 'filename':...})."""
+    path, *params = value.split(";")
+    options: dict[str, str] = {}
+    for param in params:
+        key, sep, val = param.partition("=")
+        if sep:
+            options[key.strip().lower()] = val.strip().strip('"')
+    return path.strip().strip('"'), options
+
+
+def _build_multipart(form: dict, opened: list) -> list[tuple[str, tuple]]:
+    """-F name=value → field thường; name=@file → upload file; name=<file → field lấy nội dung file."""
+    parts: list[tuple[str, tuple]] = []
+    for name, raw in form.items():
+        value = "" if raw is None else str(raw)
+        if value.startswith("@"):
+            path, options = _split_form_value(value[1:])
+            fh = open(path, "rb")
+            opened.append(fh)
+            filename = options.get("filename") or os.path.basename(path)
+            if options.get("type"):
+                parts.append((str(name), (filename, fh, options["type"])))
+            else:
+                parts.append((str(name), (filename, fh)))
+        elif value.startswith("<"):
+            path, options = _split_form_value(value[1:])
+            with open(path, "rb") as fh:
+                content = fh.read()
+            if options.get("type"):
+                parts.append((str(name), (None, content, options["type"])))
+            else:
+                parts.append((str(name), (None, content)))
+        else:
+            parts.append((str(name), (None, value)))
+    return parts
+
+
 def execute_request(parsed: dict) -> tuple:
     """Gửi HTTP request, trả về (response, elapsed_ms)."""
     kwargs: dict[str, Any] = {
-        "headers": parsed["headers"],
-        "auth":    parsed["auth"],
-        "verify":  parsed["verify_ssl"],
-        "allow_redirects": parsed["allow_redirects"],
-        "timeout": parsed["timeout"],
+        "headers": parsed.get("headers") or {},
+        "auth":    parsed.get("auth"),
+        "verify":  parsed.get("verify_ssl", True),
+        "allow_redirects": parsed.get("allow_redirects", True),
+        "timeout": parsed.get("timeout", DEFAULT_TIMEOUT),
     }
-    body = parsed["body"]
-    if isinstance(body, dict):
-        kwargs["files"] = body
-    elif isinstance(body, str):
-        ct = parsed["headers"].get("Content-Type",
-             parsed["headers"].get("content-type", ""))
-        if "application/json" in ct:
-            try:    kwargs["json"] = json.loads(body)
-            except Exception: kwargs["data"] = body
-        else:
+    body = parsed.get("body")
+    opened: list = []
+    try:
+        if isinstance(body, dict):
+            kwargs["files"] = _build_multipart(body, opened)
+        elif isinstance(body, str):
+            # Gửi đúng từng byte người dùng nhập (UTF-8), không parse/serialize lại JSON.
+            # (requests encode str body bằng latin-1 → lỗi với tiếng Việt / emoji.)
+            kwargs["data"] = body.encode("utf-8")
+        elif isinstance(body, bytes):
             kwargs["data"] = body
-    elif isinstance(body, bytes):
-        kwargs["data"] = body
 
-    t0   = time.time()
-    resp = requests.request(parsed["method"], parsed["url"], **kwargs)
-    return resp, (time.time() - t0) * 1000
+        t0 = time.perf_counter()
+        resp = requests.request(parsed["method"], parsed["url"], **kwargs)
+        return resp, (time.perf_counter() - t0) * 1000
+    finally:
+        for fh in opened:
+            fh.close()
 
 
 # ──────────────────────────────────────────────
@@ -608,7 +961,7 @@ def decode_response(resp, auto_decode: bool = True) -> tuple[str, str]:
     charset_match = re.search(r'charset=([^\s;]+)', ct_header, re.I)
 
     if charset_match:
-        charset = charset_match.group(1).strip()
+        charset = charset_match.group(1).strip().strip("\"'")   # charset="utf-8"
         enc_info = f"{charset}  (từ Content-Type header)"
         try:
             return resp.content.decode(charset, errors="replace"), enc_info
@@ -632,29 +985,35 @@ def decode_response(resp, auto_decode: bool = True) -> tuple[str, str]:
 # ──────────────────────────────────────────────
 # Beautify curl body
 # ──────────────────────────────────────────────
+_BEAUTIFY_DATA_RE = re.compile(
+    r"(?<!\S)(?P<flag>-d|--data|--data-raw|--data-binary|--data-ascii|--json)(?P<sep>\s+)"
+    r"(?P<arg>'[^']*'(?:\\''[^']*')*|\"(?:[^\"\\]|\\.)*\")",
+    re.DOTALL,
+)
+
+
+def _shell_quote_like(value: str, quote_char: str) -> str:
+    """Quote lại giá trị theo đúng kiểu quote ban đầu, an toàn với bash."""
+    if quote_char == "'":
+        return "'" + value.replace("'", "'\\''") + "'"
+    escaped = (value.replace("\\", "\\\\").replace('"', '\\"')
+               .replace("$", "\\$").replace("`", "\\`"))
+    return f'"{escaped}"'
+
+
 def beautify_curl_body(curl_str: str) -> str:
     """
-    Tìm -d / --data-raw trong curl string.
+    Tìm -d / --data-raw / --json trong curl string.
     Nếu body là JSON hợp lệ → format indent=2.
-    Trả về curl string đã format.
+    Trả về curl string đã format (quote lại đúng chuẩn shell, kể cả khi JSON có dấu ').
     """
-    pattern = re.compile(
-        r"(-d|--data|--data-raw|--data-binary|--data-ascii)\s+"
-        r"('(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\")",
-        re.DOTALL
-    )
-
     def _fmt(m: re.Match) -> str:
-        flag  = m.group(1)
-        raw   = m.group(2)
-        quote = raw[0]
-        inner = raw[1:-1].replace(f"\\{quote}", quote)
+        raw = m.group("arg")
         try:
-            obj        = json.loads(inner)
-            pretty     = json.dumps(obj, indent=2, ensure_ascii=False)
-            pretty_esc = pretty.replace(quote, f"\\{quote}")
-            return f"{flag} {quote}{pretty_esc}{quote}"
+            value = shell_split(raw)[0]
+            pretty = json.dumps(json.loads(value), indent=2, ensure_ascii=False)
         except Exception:
             return m.group(0)
+        return f"{m.group('flag')}{m.group('sep')}{_shell_quote_like(pretty, raw[0])}"
 
-    return pattern.sub(_fmt, curl_str)
+    return _BEAUTIFY_DATA_RE.sub(_fmt, curl_str)

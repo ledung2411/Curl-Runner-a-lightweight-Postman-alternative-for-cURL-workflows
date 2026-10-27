@@ -50,6 +50,22 @@ class ScenarioWindow(tk.Toplevel):
         self._build_ui()
         self._refresh_scenario_list()
         self._load_scenario(0)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self) -> None:
+        # Không để worker thread tiếp tục gọi vào cửa sổ đã bị huỷ.
+        self.stop_event.set()
+        if not self.running:
+            self._save_current_editor()
+            self._save_all()
+        self.destroy()
+
+    def _post(self, callback) -> None:
+        """Đẩy callback về main thread; bỏ qua nếu cửa sổ đã đóng."""
+        try:
+            self.after(0, callback)
+        except (tk.TclError, RuntimeError):
+            pass
 
     def _setup_fonts(self) -> None:
         self.fn_mono  = tkfont.Font(family=FONT_FAMILY_MONO, size=10)
@@ -790,13 +806,17 @@ class ScenarioWindow(tk.Toplevel):
         self.export_btn.config(state="disabled")
 
         runtime_env = dict(self.parent_app.environments.get(self.parent_app.active_env, {}))
-        threading.Thread(target=self._run_worker, args=(steps, runtime_env), daemon=True).start()
+        # Đọc giá trị Tk variable ở main thread; worker thread không được chạm vào Tk.
+        stop_on_fail = bool(self.stop_on_fail_var.get())
+        threading.Thread(
+            target=self._run_worker, args=(steps, runtime_env, stop_on_fail), daemon=True,
+        ).start()
 
     def _stop_run(self) -> None:
         self.stop_event.set()
         self._log("Stop requested. Running requests will finish, next groups will be skipped.", "err")
 
-    def _run_worker(self, steps: list[dict], runtime_env: dict[str, str]) -> None:
+    def _run_worker(self, steps: list[dict], runtime_env: dict[str, str], stop_on_fail: bool = True) -> None:
         started = len(steps)
         passed = 0
         failed = 0
@@ -828,23 +848,22 @@ class ScenarioWindow(tk.Toplevel):
                         else:
                             failed += 1
                             group_failed = True
-                        self.after(0, lambda s=step, r=result: self._apply_step_result(s, r))
+                        self._post(lambda s=step, r=result: self._apply_step_result(s, r))
                 if group_extracts:
                     runtime_env.update(group_extracts)
                     names = ", ".join(sorted(group_extracts))
                     self._after_log(f"Group {group}: extracted variables for next group: {names}", "ok")
-                if group_failed and self.stop_on_fail_var.get():
+                if group_failed and stop_on_fail:
                     self._after_log(f"Group {group}: failed, stopping scenario.", "err")
                     break
         finally:
-            self.after(0, lambda: self._finish_run(started, passed, failed))
+            self._post(lambda: self._finish_run(started, passed, failed))
 
     def _run_step(self, step: dict, runtime_env: dict[str, str]) -> dict[str, Any]:
         name = step.get("name", "Step")
         try:
             curl = apply_env(step.get("curl", ""), runtime_env)
             parsed = parse_curl(curl)
-            parsed["timeout"] = parsed.get("timeout", 30)
             resp, elapsed = execute_request(parsed)
             body_text, _ = decode_response(resp, True)
             extracts, extract_logs = self._extract_values(step.get("extractors", ""), resp, body_text)
@@ -879,7 +898,7 @@ class ScenarioWindow(tk.Toplevel):
             }
 
     def _after_mark_group(self, steps: list[dict], status: str, elapsed: str, tag: str) -> None:
-        self.after(0, lambda: [self._set_step_result(s, status, elapsed, tag) for s in steps])
+        self._post(lambda: [self._set_step_result(s, status, elapsed, tag) for s in steps])
 
     def _apply_step_result(self, step: dict, result: dict) -> None:
         self._set_step_result(step, result["status"], result["elapsed"], result["tag"], result)
@@ -921,7 +940,7 @@ class ScenarioWindow(tk.Toplevel):
         self.log_tw.config(state="disabled")
 
     def _after_log(self, text: str, tag: str = "dim") -> None:
-        self.after(0, lambda: self._log(text, tag))
+        self._post(lambda: self._log(text, tag))
 
     def _log(self, text: str, tag: str = "dim") -> None:
         self.log_tw.config(state="normal")

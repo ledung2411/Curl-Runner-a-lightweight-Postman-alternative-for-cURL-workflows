@@ -52,3 +52,4 @@ class RequestTab:
         self._builder_dirty = False
         self._syncing_builder = False
         self._parse_after = None
+        self._parsed_extras: dict = {}  # auth/-k/-m/form/binary body từ lần parse curl gần nhất
