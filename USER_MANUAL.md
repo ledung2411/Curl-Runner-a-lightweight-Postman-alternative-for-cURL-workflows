@@ -215,6 +215,12 @@ Script chạy trước khi gửi request, dùng cho:
 - Gọi API login phụ
 - Chuẩn bị biến environment runtime
 
+> ⚠️ Script là Python thật, chạy với toàn quyền của app (không phải sandbox):
+> có thể đọc/ghi file, gọi lệnh hệ thống... Chỉ chạy script do bạn viết hoặc đã đọc kỹ,
+> nhất là khi nhận collection/scenario từ người khác.
+>
+> Script có thể bắt đầu bằng comment; chỉ khi **toàn bộ** script là comment/dòng trống thì mới được bỏ qua.
+
 ### 6.1 API có sẵn trong script
 
 | API | Mục đích |

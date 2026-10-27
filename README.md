@@ -586,16 +586,23 @@ C:\Users\<tên>\.curl_runner\
 
 | Flag | Mô tả |
 |---|---|
-| `-X GET/POST/PUT/DELETE...` | Chỉ định HTTP method |
-| `-H 'Key: Value'` | Thêm request header |
-| `-d '...'` / `--data-raw` | Request body |
-| `--data-binary` | Binary body |
-| `-F key=value` | Form data (multipart) |
+| `-X GET/POST/PUT/DELETE...` | Chỉ định HTTP method (cả dạng dính `-XPOST`) |
+| `-H 'Key: Value'` | Thêm request header (header trùng tên → header sau ghi đè) |
+| `-d '...'` / `--data-raw` / `--data-ascii` | Request body; dùng nhiều lần sẽ nối bằng `&` như curl |
+| `-d @file` / `--data-binary @file` | Đọc body từ file (`-d` bỏ xuống dòng, `--data-binary` giữ nguyên) |
+| `--data-urlencode 'name=giá trị'` | URL-encode giá trị |
+| `--json '{...}'` | Body JSON + tự thêm `Content-Type`/`Accept: application/json` |
+| `-G` / `--get` | Chuyển dữ liệu `-d` thành query string |
+| `-I` / `--head` | Gửi `HEAD` |
+| `-F key=value` / `-F file=@path;type=...` | Form data (multipart): field thường hoặc upload file |
 | `-u user:pass` | Basic Authentication |
-| `-k` / `--insecure` | Bỏ qua kiểm tra SSL |
+| `-A`, `-e`, `-b 'a=1'`, `--oauth2-bearer` | User-Agent, Referer, Cookie, Bearer token |
+| `-k` / `--insecure` | Bỏ qua kiểm tra SSL (được ưu tiên hơn checkbox Verify SSL) |
 | `-L` / `--location` | Follow redirect |
-| `-m` / `--max-time` | Timeout (giây) |
+| `-m` / `--max-time` | Timeout (giây, được ưu tiên hơn ô Timeout) |
+| `-sSL`, `-o file`, `--compressed`... | Được nhận diện và bỏ qua, không bị hiểu nhầm thành URL |
 | `\` / `^` (xuống dòng) | Curl nhiều dòng (Linux/Windows) |
+| Chrome "Copy as cURL" | Hỗ trợ cả dạng bash (`$'...'`) và cmd (`^"...^"`) |
 | `{{variable}}` | Biến môi trường |
 
 ---
