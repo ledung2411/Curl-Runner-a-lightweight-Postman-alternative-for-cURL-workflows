@@ -2,14 +2,12 @@
 # type: ignore
 from __future__ import annotations
 
-import json
 import re
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, font as tkfont
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from constants import (
     BG, BG2, BG3, BORDER, ACCENT, TEXT, TEXT_DIM,
@@ -17,7 +15,8 @@ from constants import (
     GREEN, RED_C, YELLOW_C,
     SURFACE_HOVER, SURFACE_ACTIVE, TITLEBAR_BG, FONT_FAMILY, FONT_FAMILY_MONO,
 )
-from core import apply_env, parse_curl, execute_request, decode_response
+from core import parse_curl
+from scenario_engine import run_scenario, runnable_steps, safe_group
 import store
 from scenario_report import build_scenario_report, export_scenario_report
 from ui_theme import apply_modern_theme
@@ -534,11 +533,7 @@ class ScenarioWindow(tk.Toplevel):
         return (max(groups) + 1) if groups else 1
 
     def _safe_group(self, step: dict) -> int:
-        try:
-            group = int(step.get("group", 1))
-            return max(1, group)
-        except Exception:
-            return 1
+        return safe_group(step)
 
     def _refresh_steps(self) -> None:
         for row in self.step_tree.get_children():
@@ -585,153 +580,6 @@ class ScenarioWindow(tk.Toplevel):
         self._save_all()
         self._refresh_steps()
         self._log(f"Imported {added} open tab(s).", "ok" if added else "dim")
-
-    # Extractors / assertions
-    def _active_rule_lines(self, text: str) -> list[str]:
-        out = []
-        for line in (text or "").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#"):
-                out.append(line)
-        return out
-
-    def _extract_values(self, rules: str, resp, body_text: str) -> tuple[dict[str, str], list[str]]:
-        extracted: dict[str, str] = {}
-        logs: list[str] = []
-        headers = {str(k).lower(): str(v) for k, v in dict(resp.headers).items()}
-        body_json = None
-        json_loaded = False
-
-        for line in self._active_rule_lines(rules):
-            m = re.match(r"^([A-Za-z_]\w*)\s*=\s*(json|header|regex)\s*:(.+)$", line, re.I)
-            if not m:
-                raise ValueError(f"Extractor không hợp lệ: {line}")
-            name, source, selector = m.group(1), m.group(2).lower(), m.group(3).strip()
-            if source == "header":
-                value = headers.get(selector.lower())
-                if value is None:
-                    raise ValueError(f"Extractor `{name}` không tìm thấy header `{selector}`")
-            elif source == "regex":
-                hit = re.search(selector, body_text, re.S)
-                if not hit:
-                    raise ValueError(f"Extractor `{name}` không match regex")
-                value = hit.group(1) if hit.groups() else hit.group(0)
-            else:
-                if not json_loaded:
-                    body_json = json.loads(body_text)
-                    json_loaded = True
-                value = self._json_path_get(body_json, selector)
-            extracted[name] = str(value)
-            logs.append(f"extract {name}={str(value)[:80]}")
-        return extracted, logs
-
-    def _evaluate_assertions(self, rules: str, resp, body_text: str) -> tuple[bool, list[str]]:
-        lines = self._active_rule_lines(rules)
-        if not lines:
-            ok = 200 <= resp.status_code < 400
-            return ok, [f"default status 2xx/3xx => {'PASS' if ok else 'FAIL'}"]
-
-        details: list[str] = []
-        body_json = None
-        json_loaded = False
-        headers = {str(k).lower(): str(v) for k, v in dict(resp.headers).items()}
-
-        for line in lines:
-            passed = False
-            if m := re.match(r"^status\s*(==|!=|>=|<=|>|<)\s*(\d+)$", line, re.I):
-                actual = int(resp.status_code)
-                expected = int(m.group(2))
-                passed = self._compare(actual, m.group(1), expected)
-            elif m := re.match(r"^status\s+in\s+(.+)$", line, re.I):
-                expected_codes = [int(x.strip()) for x in m.group(1).split(",") if x.strip()]
-                passed = int(resp.status_code) in expected_codes
-            elif m := re.match(r"^body\s+(contains|not_contains)\s+(.+)$", line, re.I):
-                needle = self._strip_quotes(m.group(2).strip())
-                contains = needle in body_text
-                passed = contains if m.group(1).lower() == "contains" else not contains
-            elif m := re.match(r"^header\s+([^\s]+)\s+(contains|==|!=)\s+(.+)$", line, re.I):
-                actual = headers.get(m.group(1).lower(), "")
-                expected = self._strip_quotes(m.group(3).strip())
-                op = m.group(2).lower()
-                passed = (expected in actual) if op == "contains" else self._compare(str(actual), op, expected)
-            elif m := re.match(r"^json\s+(\S+)\s+exists$", line, re.I):
-                if not json_loaded:
-                    body_json = json.loads(body_text)
-                    json_loaded = True
-                self._json_path_get(body_json, m.group(1))
-                passed = True
-            elif m := re.match(r"^json\s+(\S+)\s*(==|!=|>=|<=|>|<)\s*(.+)$", line, re.I):
-                if not json_loaded:
-                    body_json = json.loads(body_text)
-                    json_loaded = True
-                actual = self._json_path_get(body_json, m.group(1))
-                expected = self._coerce_value(self._strip_quotes(m.group(3).strip()))
-                passed = self._compare(actual, m.group(2), expected)
-            else:
-                raise ValueError(f"Assertion không hợp lệ: {line}")
-            details.append(f"{'PASS' if passed else 'FAIL'}: {line}")
-            if not passed:
-                return False, details
-        return True, details
-
-    def _json_path_get(self, data: Any, path: str) -> Any:
-        if not path.startswith("$"):
-            raise ValueError(f"JSON path phải bắt đầu bằng `$`: {path}")
-        cur = data
-        for key, idx in re.findall(r"\.([A-Za-z_][\w-]*)|\[(\d+)\]", path[1:]):
-            if key:
-                if not isinstance(cur, dict) or key not in cur:
-                    raise ValueError(f"Không tìm thấy JSON path `{path}`")
-                cur = cur[key]
-            else:
-                i = int(idx)
-                if not isinstance(cur, list) or i >= len(cur):
-                    raise ValueError(f"Không tìm thấy JSON path `{path}`")
-                cur = cur[i]
-        return cur
-
-    def _strip_quotes(self, value: str) -> str:
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            return value[1:-1]
-        return value
-
-    def _coerce_value(self, value: str) -> Any:
-        lower = value.lower()
-        if lower == "true":
-            return True
-        if lower == "false":
-            return False
-        if lower == "null":
-            return None
-        try:
-            return int(value)
-        except Exception:
-            pass
-        try:
-            return float(value)
-        except Exception:
-            return value
-
-    def _compare(self, actual: Any, op: str, expected: Any) -> bool:
-        if op == "==":
-            return actual == expected or str(actual) == str(expected)
-        if op == "!=":
-            return not self._compare(actual, "==", expected)
-        try:
-            left = float(actual)
-            right = float(expected)
-        except Exception:
-            left = str(actual)
-            right = str(expected)
-        if op == ">":
-            return left > right
-        if op == ">=":
-            return left >= right
-        if op == "<":
-            return left < right
-        if op == "<=":
-            return left <= right
-        return False
 
     # Report export
     def _show_export_menu(self) -> None:
@@ -791,7 +639,7 @@ class ScenarioWindow(tk.Toplevel):
             return
         if not self._save_current_editor() and self.selected_step_id:
             return
-        steps = [dict(s) for s in self._steps() if s.get("enabled", True) and s.get("curl", "").strip()]
+        steps = runnable_steps(self._current_scenario())
         if not steps:
             messagebox.showinfo("", "Scenario chưa có step nào enabled/có curl.")
             return
@@ -817,85 +665,33 @@ class ScenarioWindow(tk.Toplevel):
         self._log("Stop requested. Running requests will finish, next groups will be skipped.", "err")
 
     def _run_worker(self, steps: list[dict], runtime_env: dict[str, str], stop_on_fail: bool = True) -> None:
-        started = len(steps)
-        passed = 0
-        failed = 0
-        grouped: dict[int, list[dict]] = {}
-        for step in steps:
-            grouped.setdefault(self._safe_group(step), []).append(step)
+        summary = {"passed": 0, "failed": 0}
 
-        try:
-            for group in sorted(grouped):
-                if self.stop_event.is_set():
-                    break
-                group_steps = grouped[group]
+        def on_event(kind: str, payload: dict) -> None:
+            group = payload.get("group")
+            if kind == "group_start":
+                group_steps = payload["steps"]
                 self._after_log(f"Group {group}: running {len(group_steps)} step(s) in parallel.", "run")
                 self._after_mark_group(group_steps, "RUNNING", "", "run")
-                max_workers = max(1, min(len(group_steps), 16))
-                group_extracts: dict[str, str] = {}
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {
-                        executor.submit(self._run_step, step, dict(runtime_env)): step
-                        for step in group_steps
-                    }
-                    group_failed = False
-                    for future in as_completed(futures):
-                        step = futures[future]
-                        result = future.result()
-                        if result["ok"]:
-                            passed += 1
-                            group_extracts.update(result.get("extracts", {}))
-                        else:
-                            failed += 1
-                            group_failed = True
-                        self._post(lambda s=step, r=result: self._apply_step_result(s, r))
-                if group_extracts:
-                    runtime_env.update(group_extracts)
-                    names = ", ".join(sorted(group_extracts))
-                    self._after_log(f"Group {group}: extracted variables for next group: {names}", "ok")
-                if group_failed and stop_on_fail:
-                    self._after_log(f"Group {group}: failed, stopping scenario.", "err")
-                    break
-        finally:
-            self._post(lambda: self._finish_run(started, passed, failed))
+            elif kind == "step_result":
+                step, result = payload["step"], payload["result"]
+                self._post(lambda s=step, r=result: self._apply_step_result(s, r))
+            elif kind == "group_extracts":
+                names = ", ".join(payload["names"])
+                self._after_log(f"Group {group}: extracted variables for next group: {names}", "ok")
+            elif kind == "group_stop":
+                self._after_log(f"Group {group}: failed, stopping scenario.", "err")
 
-    def _run_step(self, step: dict, runtime_env: dict[str, str]) -> dict[str, Any]:
-        name = step.get("name", "Step")
         try:
-            curl = apply_env(step.get("curl", ""), runtime_env)
-            parsed = parse_curl(curl)
-            resp, elapsed = execute_request(parsed)
-            body_text, _ = decode_response(resp, True)
-            extracts, extract_logs = self._extract_values(step.get("extractors", ""), resp, body_text)
-            ok, assertion_logs = self._evaluate_assertions(step.get("assertions", ""), resp, body_text)
-            detail = "; ".join(assertion_logs + extract_logs)
-            suffix = f" · {detail}" if detail else ""
-            return {
-                "ok": ok,
-                "status": f"{resp.status_code} {resp.reason}",
-                "elapsed": f"{elapsed:.0f} ms",
-                "elapsed_ms": float(elapsed),
-                "tag": "ok" if ok else "err",
-                "message": f"{name}: {resp.status_code} {resp.reason} · {elapsed:.0f} ms{suffix}",
-                "extracts": extracts,
-                "extract_names": sorted(extracts),
-                "assertions": assertion_logs,
-                "error": "",
-            }
-        except Exception as exc:
-            msg = str(exc) or repr(exc) or exc.__class__.__name__
-            return {
-                "ok": False,
-                "status": "ERROR",
-                "elapsed": "",
-                "elapsed_ms": 0.0,
-                "tag": "err",
-                "message": f"{name}: ERROR · {msg}",
-                "extracts": {},
-                "extract_names": [],
-                "assertions": [],
-                "error": msg,
-            }
+            summary = run_scenario(
+                steps, runtime_env,
+                stop_on_fail=stop_on_fail,
+                stop_event=self.stop_event,
+                on_event=on_event,
+            )
+        finally:
+            started = len(steps)
+            self._post(lambda: self._finish_run(started, summary["passed"], summary["failed"]))
 
     def _after_mark_group(self, steps: list[dict], status: str, elapsed: str, tag: str) -> None:
         self._post(lambda: [self._set_step_result(s, status, elapsed, tag) for s in steps])

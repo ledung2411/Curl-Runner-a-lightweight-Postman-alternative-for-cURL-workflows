@@ -123,14 +123,18 @@ def build_scenario_report(
 def export_scenario_report(report: dict[str, Any], output_path: str | Path) -> Path:
     path = Path(output_path)
     suffix = path.suffix.lower()
+    if suffix in (".html", ".htm", ".csv", ".xml", ".json"):
+        path.parent.mkdir(parents=True, exist_ok=True)   # vd: --report reports/junit.xml trên CI
     if suffix in (".html", ".htm"):
         _write_html(report, path)
     elif suffix == ".csv":
         _write_csv(report, path)
     elif suffix == ".xml":
         _write_junit(report, path)
+    elif suffix == ".json":
+        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     else:
-        raise ValueError("Report extension must be .html, .csv, or .xml")
+        raise ValueError("Report extension must be .html, .csv, .xml, or .json")
     return path
 
 
@@ -205,7 +209,14 @@ def _write_csv(report: dict[str, Any], path: Path) -> None:
             row = {key: step.get(key, "") for key in fields}
             row["assertions"] = " | ".join(step["assertions"])
             row["extract_names"] = " | ".join(step["extract_names"])
-            writer.writerow(row)
+            writer.writerow({key: _csv_safe(value) for key, value in row.items()})
+
+
+def _csv_safe(value: Any) -> Any:
+    """Chặn CSV/formula injection khi mở report bằng Excel (ô bắt đầu bằng = + - @)."""
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + value
+    return value
 
 
 def _write_junit(report: dict[str, Any], path: Path) -> None:
