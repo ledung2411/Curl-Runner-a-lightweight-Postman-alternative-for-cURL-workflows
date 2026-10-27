@@ -13,6 +13,12 @@ HIST_FILE = DATA_DIR / "history.json"
 COLL_FILE = DATA_DIR / "collections.json"
 ENV_FILE  = DATA_DIR / "environments.json"
 SCEN_FILE = DATA_DIR / "scenarios.json"
+SETTINGS_FILE = DATA_DIR / "settings.json"
+
+DEFAULT_SETTINGS = {
+    "redact_history": True,   # che token/mật khẩu trước khi lưu history
+    "secret_vars": [],        # tên biến người dùng tự đánh dấu là bí mật
+}
 
 
 def _backup_corrupt_file(path: Path) -> None:
@@ -89,3 +95,9 @@ def load_scenarios() -> list:
 
 def save_scenarios(data: list) -> None:
     save(SCEN_FILE, data)
+
+def load_settings() -> dict:
+    return {**DEFAULT_SETTINGS, **load(SETTINGS_FILE, {})}
+
+def save_settings(data: dict) -> None:
+    save(SETTINGS_FILE, data)

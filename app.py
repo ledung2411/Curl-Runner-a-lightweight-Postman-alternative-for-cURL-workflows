@@ -35,6 +35,10 @@ from core import (
 )
 import store
 from importers import import_path, merge_import
+from redaction import (
+    MASK, REDACTED, is_secret_name, mask_value, redact_curl, redact_url,
+    replace_secret_values, secret_map,
+)
 from scenario_engine import evaluate_assertions, extract_values, join_test_rules, split_test_rules
 from ui_compare import CurlCompareWindow
 from ui_converter import ConverterWindow
@@ -57,6 +61,7 @@ class CurlRunnerApp(tk.Tk):
         self.configure(bg=BG)
         self.ui_theme_name = apply_modern_theme(self)
 
+        self.settings     = store.load_settings()
         self.history      = store.load_history()
         self.collections  = store.load_collections()
         self.environments = store.load_environments()
@@ -227,6 +232,48 @@ class CurlRunnerApp(tk.Tk):
         bf = tk.Frame(parent, bg=SIDEBAR)
         bf.pack(fill="x", padx=6, pady=(2,6))
         self._mkbtn(bf, "Xóa hết", self._clear_history)
+        self.redact_history_var = tk.BooleanVar(value=bool(self.settings.get("redact_history", True)))
+        self.history_privacy_btn = self._mkbtn(bf, "🔒", self._show_history_privacy_menu, pad=(6,0))
+
+    def _show_history_privacy_menu(self):
+        m = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, activebackground=ACCENT)
+        m.add_checkbutton(label="Che token/mật khẩu khi lưu lịch sử",
+                          variable=self.redact_history_var,
+                          command=self._toggle_redact_history)
+        m.add_command(label="Che bí mật trong toàn bộ lịch sử hiện có",
+                      command=self._redact_existing_history)
+        m.tk_popup(self.history_privacy_btn.winfo_rootx(),
+                   self.history_privacy_btn.winfo_rooty() + self.history_privacy_btn.winfo_height())
+
+    def _toggle_redact_history(self):
+        self.settings["redact_history"] = bool(self.redact_history_var.get())
+        store.save_settings(self.settings)
+
+    def _current_secret_map(self, env: dict | None = None) -> dict[str, str]:
+        """Biến bí mật (theo tên hoặc do người dùng đánh dấu) của environment đang chọn + biến runtime."""
+        values = dict(self.environments.get(self.active_env, {}))
+        values.update(env or {})
+        return secret_map(values, set(self.settings.get("secret_vars", [])))
+
+    def _redact_existing_history(self):
+        if not messagebox.askyesno(
+                "Che bí mật trong lịch sử",
+                "Thay token/mật khẩu trong toàn bộ lịch sử bằng {{biến}} hoặc [REDACTED]?\n"
+                "Không thể hoàn tác."):
+            return
+        secrets: dict[str, str] = {}
+        for values in self.environments.values():
+            secrets.update(secret_map(values, set(self.settings.get("secret_vars", []))))
+        changed = 0
+        for item in self.history:
+            curl, url = item.get("curl", ""), item.get("url", "")
+            new_curl, new_url = redact_curl(curl, secrets), redact_url(url, secrets)
+            if (new_curl, new_url) != (curl, url):
+                item["curl"], item["url"] = new_curl, new_url
+                changed += 1
+        store.save_history(self.history)
+        self._refresh_history_list()
+        messagebox.showinfo("Che bí mật trong lịch sử", f"Đã che {changed} mục.")
 
     def _hist_focus(self, on):
         ph = "🔍 Tìm kiếm..."
@@ -504,9 +551,10 @@ class CurlRunnerApp(tk.Tk):
     def _open_env_editor(self):
         # Chỉnh sửa trên bản nháp; chỉ áp dụng khi bấm "Lưu & Đóng".
         draft = {name: dict(values) for name, values in self.environments.items()}
+        secret_names = set(self.settings.get("secret_vars", []))
         win = tk.Toplevel(self)
         win.title("Environment Manager")
-        win.configure(bg=BG); win.geometry("640x480"); win.grab_set()
+        win.configure(bg=BG); win.geometry("700x500"); win.grab_set()
 
         top = tk.Frame(win, bg=BG)
         top.pack(fill="x", padx=12, pady=(10,4))
@@ -521,6 +569,27 @@ class CurlRunnerApp(tk.Tk):
         # Environment đang hiển thị trong bảng; dùng để không mất các chỉnh sửa
         # chưa lưu khi người dùng chuyển sang environment khác.
         editing = {"name": env_sel.get()}
+        # Giá trị thật của từng dòng (bảng chỉ hiển thị •••••• cho biến bí mật).
+        real: dict[str, str] = {}
+        revealed = {"on": False}
+
+        def secret_label(name: str) -> str:
+            if name in secret_names:
+                return "🔒"
+            return "🔒 auto" if is_secret_name(name) else ""
+
+        def show_row(iid: str, name: str) -> None:
+            value = real.get(iid, "")
+            shown = value if revealed["on"] else mask_value(name, value, secret_names)
+            tree.item(iid, values=(name, shown, secret_label(name)))
+
+        def row_name(iid: str) -> str:
+            return str(tree.item(iid, "values")[0])
+
+        def insert_row(name: str, value: str) -> None:
+            iid = tree.insert("", "end", values=(name, "", ""))
+            real[iid] = value
+            show_row(iid, name)
 
         def commit_tree():
             name = editing["name"]
@@ -528,9 +597,9 @@ class CurlRunnerApp(tk.Tk):
                 return
             rows = {}
             for iid in tree.get_children():
-                k, v = (str(x) for x in tree.item(iid, "values"))
-                if k.strip():
-                    rows[k.strip()] = v
+                key = row_name(iid).strip()
+                if key:
+                    rows[key] = real.get(iid, "")
             draft[name] = rows
 
         def new_env():
@@ -544,22 +613,31 @@ class CurlRunnerApp(tk.Tk):
         def del_env():
             n = env_sel.get()
             if len(draft) <= 1:
-                messagebox.showinfo("","Phải giữ ít nhất 1."); return
+                messagebox.showinfo("","Phải giữ ít nhất 1.", parent=win); return
             if messagebox.askyesno("Xác nhận", f"Xóa '{n}'?", parent=win):
                 draft.pop(n, None)
                 env_cb["values"] = list(draft.keys())
                 env_sel.set(list(draft.keys())[0]); load_vars()
 
+        def toggle_reveal():
+            revealed["on"] = not revealed["on"]
+            reveal_btn.config(text="🙈 Ẩn giá trị" if revealed["on"] else "👁 Hiện giá trị")
+            for iid in tree.get_children():
+                show_row(iid, row_name(iid))
+
         self._mkbtn(top, "＋ Mới", new_env, side="left", pad=(4,0))
         self._mkbtn(top, "🗑",     del_env, side="left", pad=(4,0))
+        reveal_btn = self._mkbtn(top, "👁 Hiện giá trị", toggle_reveal, side="right")
 
         tbl = tk.Frame(win, bg=BG2)
         tbl.pack(fill="both", expand=True, padx=12, pady=4)
-        cols = ("variable","value")
+        cols = ("variable","value","secret")
         tree = ttk.Treeview(tbl, columns=cols, show="headings", height=14)
         tree.heading("variable", text="Variable  ({{tên}})")
         tree.heading("value",    text="Value")
-        tree.column("variable", width=200); tree.column("value", width=380)
+        tree.heading("secret",   text="Bí mật")
+        tree.column("variable", width=200); tree.column("value", width=360)
+        tree.column("secret", width=80, anchor="center", stretch=False)
         vsb = tk.Scrollbar(tbl, command=tree.yview, bg=BG3, troughcolor=BG2, bd=0)
         tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y"); tree.pack(fill="both", expand=True)
@@ -567,8 +645,9 @@ class CurlRunnerApp(tk.Tk):
         def load_vars():
             editing["name"] = env_sel.get()
             tree.delete(*tree.get_children())
+            real.clear()
             for k, v in draft.get(env_sel.get(),{}).items():
-                tree.insert("","end", values=(k,v))
+                insert_row(str(k), str(v))
 
         env_cb.bind("<<ComboboxSelected>>", lambda e: (commit_tree(), load_vars()))
         load_vars()
@@ -577,23 +656,37 @@ class CurlRunnerApp(tk.Tk):
             iid = tree.identify_row(event.y)
             col = tree.identify_column(event.x)
             if not iid: return
+            col_idx = int(col[1:])-1
+            if col_idx == 2:   # cột Bí mật: bật/tắt đánh dấu thủ công
+                name = row_name(iid)
+                secret_names.symmetric_difference_update({name})
+                show_row(iid, name)
+                return
             bbox = tree.bbox(iid, col)
             if not bbox: return
             x,y,w,h = bbox
-            col_idx  = int(col[1:])-1
-            val      = tree.item(iid,"values")[col_idx]
+            val = row_name(iid) if col_idx == 0 else real.get(iid, "")
             ent = tk.Entry(tbl, font=self.fn_label, bg=BG3, fg=TEXT,
                            insertbackground=ACCENT, relief="flat", bd=1)
             ent.place(x=x,y=y,width=w,height=h)
             ent.insert(0,val); ent.focus_set()
             def commit(_=None):
-                vals = list(tree.item(iid,"values"))
-                vals[col_idx] = ent.get()
-                tree.item(iid, values=vals); ent.destroy()
+                if not ent.winfo_exists(): return
+                if col_idx == 0:
+                    show_row(iid, ent.get())
+                else:
+                    real[iid] = ent.get()
+                    show_row(iid, row_name(iid))
+                ent.destroy()
             ent.bind("<Return>",   commit)
             ent.bind("<FocusOut>", commit)
 
         tree.bind("<Double-Button-1>", edit_cell)
+
+        def delete_row():
+            for iid in tree.selection():
+                real.pop(iid, None)
+                tree.delete(iid)
 
         bf = tk.Frame(win, bg=BG)
         bf.pack(fill="x", padx=12, pady=(4,12))
@@ -603,17 +696,18 @@ class CurlRunnerApp(tk.Tk):
             commit_tree()
             self.environments = draft
             store.save_environments(self.environments)
+            self.settings["secret_vars"] = sorted(secret_names)
+            store.save_settings(self.settings)
             self._refresh_env_selector()
             self.active_env = env_name
             self.env_var.set(env_name)
             self._update_env_hint()
             win.destroy()
 
-        self._mkbtn(bf, "＋ Thêm dòng",
-                    lambda: tree.insert("","end",values=("NEW_VAR","value")), side="left")
-        self._mkbtn(bf, "🗑 Xóa dòng",
-                    lambda: tree.delete(tree.selection()[0]) if tree.selection() else None,
-                    side="left", pad=(6,0))
+        self._mkbtn(bf, "＋ Thêm dòng", lambda: insert_row("NEW_VAR", "value"), side="left")
+        self._mkbtn(bf, "🗑 Xóa dòng", delete_row, side="left", pad=(6,0))
+        tk.Label(bf, text="Double-click để sửa · cột Bí mật: đánh dấu biến cần che",
+                 font=self.fn_small, bg=BG, fg=TEXT_DIM).pack(side="left", padx=(10,0))
         tk.Button(bf, text="💾 Lưu & Đóng", font=self.fn_btn, bg=ACCENT, fg=ACTIVE_TEXT,
                   relief="flat", command=save_close, pady=5, padx=14).pack(side="right")
 
@@ -2020,6 +2114,12 @@ class CurlRunnerApp(tk.Tk):
         self._schedule_response_search()
 
     # ── Display response ──────────────────────
+    def _history_value(self, text: str, env: dict | None, is_url: bool = False) -> str:
+        if not self.settings.get("redact_history", True):
+            return text
+        secrets = self._current_secret_map(env)
+        return redact_url(text, secrets) if is_url else redact_curl(text, secrets)
+
     def _is_active_tab(self, tab) -> bool:
         return 0 <= self.active_tab_idx < len(self.tabs) and self.tabs[self.active_tab_idx] is tab
 
@@ -2067,8 +2167,8 @@ class CurlRunnerApp(tk.Tk):
         self.history.append({
             "id":      str(uuid.uuid4())[:8],
             "ts":      datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "method":  parsed["method"], "url": parsed["url"],
-            "curl":    original_curl,    "status": sc,
+            "method":  parsed["method"], "url": self._history_value(parsed["url"], env, is_url=True),
+            "curl":    self._history_value(original_curl, env), "status": sc,
             "elapsed": round(elapsed),
             "repeat":  repeat_count,
         })
@@ -2144,14 +2244,17 @@ class CurlRunnerApp(tk.Tk):
             w.insert("end", f"{val}\n", tag)
         w.insert("end","  ── Request ─────────────────────────────\n","lbl")
         row("Method",  parsed["method"],  "method")
-        row("URL",     parsed["url"],     "url")
+        secrets = self._current_secret_map()
+        def hide(text):
+            return replace_secret_values(str(text), secrets, MASK)
+        row("URL",     hide(parsed["url"]), "url")
         row("Env",     self.active_env)
         if parsed["headers"]:
             w.insert("end","\n  ── Request Headers ──────────────────────\n","lbl")
-            for k,v in parsed["headers"].items(): row(f"  {k}", v)
+            for k,v in parsed["headers"].items(): row(f"  {k}", hide(v))
         if parsed["body"] and not isinstance(parsed["body"], bytes):
             w.insert("end","\n  ── Request Body ─────────────────────────\n","lbl")
-            w.insert("end", f"  {str(parsed['body'])[:500]}\n","val")
+            w.insert("end", f"  {hide(str(parsed['body'])[:500])}\n","val")
         w.insert("end","\n  ── Response ─────────────────────────────\n","lbl")
         row("Status",   f"{resp.status_code} {resp.reason}")
         row("Time",     f"{elapsed:.0f} ms")
@@ -2331,6 +2434,8 @@ class CurlRunnerApp(tk.Tk):
         context = build_ai_response_context(
             tab.parsed or {}, tab.response, tab.body_text, tab.detected_enc
         )
+        # Ngoài các key nhạy cảm (đã che sẵn), che luôn giá trị của biến bí mật ở bất kỳ đâu.
+        context = replace_secret_values(context, self._current_secret_map(), REDACTED)
         self._show_resp_tab("ai")
         provider_label = "Ollama local" if provider == "ollama" else "OpenAI"
         model_label = model or "auto model"
