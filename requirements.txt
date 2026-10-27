@@ -1,3 +1,5 @@
+# Cần Python 3.10 trở lên (ttkbootstrap mới không hỗ trợ Python 3.9).
+# Windows có nhiều bản Python: py -3.12 -m pip install -r requirements.txt
 requests
 charset-normalizer
 ttkbootstrap>=1.20.3

@@ -25,7 +25,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import store
+if sys.version_info < (3, 10):
+    sys.exit("Curl Runner cần Python 3.10 trở lên (đang chạy Python %d.%d)." % sys.version_info[:2])
+
+import store  # noqa: E402
 from importers import import_path, merge_import
 from core import apply_env, decode_response, execute_request, parse_curl
 from scenario_engine import evaluate_assertions, extract_values, run_scenario, runnable_steps

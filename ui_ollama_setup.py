@@ -21,6 +21,7 @@ from core import (
     ollama_pull_command, ollama_start_command,
 )
 from ui_theme import apply_modern_theme
+from ui_widgets import MainThreadDispatcher
 
 if TYPE_CHECKING:
     from app import CurlRunnerApp
@@ -38,6 +39,7 @@ class OllamaSetupWindow(tk.Toplevel):
         on_ready: Callable[[], None] | None = None,
     ):
         super().__init__(parent)
+        self._ui = MainThreadDispatcher(self)   # worker thread → main thread
         self.parent_app = parent
         self.base_url = base_url
         self.preferred_model = preferred_model or OLLAMA_DEFAULT_MODEL
@@ -143,7 +145,7 @@ class OllamaSetupWindow(tk.Toplevel):
         self.log_tw.config(state="disabled")
 
     def _after_log(self, text: str, tag: str = "dim") -> None:
-        self.after(0, lambda: self._log(text, tag))
+        self._ui.post(self._log, text, tag)
 
     def refresh_status(self) -> None:
         if self.busy:
@@ -151,7 +153,7 @@ class OllamaSetupWindow(tk.Toplevel):
 
         def worker() -> None:
             status = get_ollama_status(self.preferred_model, self.base_url)
-            self.after(0, lambda: self._render_status(status))
+            self._ui.post(self._render_status, status)
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -264,8 +266,8 @@ class OllamaSetupWindow(tk.Toplevel):
             except Exception as exc:
                 self._after_log(f"{title} failed: {exc}", "err")
             finally:
-                self.after(0, lambda: self._set_busy(False))
-                self.after(900, self.refresh_status)
+                self._ui.post(self._set_busy, False)
+                self._ui.post(lambda: self.after(900, self.refresh_status))
 
         threading.Thread(target=worker, daemon=True).start()
 

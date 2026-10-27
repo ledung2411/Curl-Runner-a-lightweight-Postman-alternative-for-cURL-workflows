@@ -29,7 +29,7 @@ Curl Runner là desktop API client nhẹ, tập trung vào workflow thường g�
 ### 2.1 Yêu cầu
 
 - Windows
-- Python 3.10+
+- Python 3.10+ (kiểm tra bằng `python --version`; Python 3.9 sẽ lỗi khi cài `ttkbootstrap`, xem mục 22.1)
 - pip
 - `requests`
 - `charset-normalizer`
@@ -1025,6 +1025,16 @@ Kiểm tra dependencies:
 
 ```powershell
 pip install -r requirements.txt
+```
+
+Nếu pip báo `No matching distribution found for ttkbootstrap>=1.20.3`, hoặc app báo
+`Curl Runner cần Python 3.10 trở lên`, máy đang chạy Python cũ (vd. 3.9). Cài bản mới và gọi đúng bản đó
+bằng `py` launcher (không cần gỡ bản cũ):
+
+```powershell
+winget install -e --id Python.Python.3.12
+py -3.12 -m pip install -r requirements.txt
+py -3.12 main.py
 ```
 
 ### 22.2 Curl parse lỗi

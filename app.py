@@ -45,6 +45,7 @@ from ui_converter import ConverterWindow
 from ui_ollama_setup import OllamaSetupWindow
 from ui_scenario import ScenarioWindow
 from ui_theme import apply_modern_theme
+from ui_widgets import MainThreadDispatcher
 
 
 class CurlRunnerApp(tk.Tk):
@@ -60,6 +61,7 @@ class CurlRunnerApp(tk.Tk):
         self.minsize(980, 660)
         self.configure(bg=BG)
         self.ui_theme_name = apply_modern_theme(self)
+        self._ui = MainThreadDispatcher(self)   # worker thread → main thread
 
         self.settings     = store.load_settings()
         self.history      = store.load_history()
@@ -1752,7 +1754,7 @@ class CurlRunnerApp(tk.Tk):
                 resp = None
                 elapsed = 0
                 for attempt in range(1, repeat_count + 1):
-                    self.after(0, lambda a=attempt: (
+                    self._ui.post(lambda a=attempt: (
                         tab._send_btn.config(text=f"⏳  Gửi {a}/{repeat_count}..."),
                         tab._status_lbl.config(text=f"Auto call: {a}/{repeat_count}", fg=TEXT_DIM)
                     ))
@@ -1766,12 +1768,12 @@ class CurlRunnerApp(tk.Tk):
                 if repeat_logs:
                     logs.append(f"🔁 Auto call complete: {repeat_count} request(s)")
                     logs.extend(repeat_logs)
-                self.after(0, lambda: self._display(
+                self._ui.post(lambda: self._display(
                     tab, parsed, resp, elapsed, original_curl, logs, repeat_count, env
                 ))
             except Exception as e:
                 error_msg = str(e) or repr(e) or e.__class__.__name__
-                self.after(0, lambda error_msg=error_msg: self._show_error(tab, error_msg))
+                self._ui.post(lambda error_msg=error_msg: self._show_error(tab, error_msg))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2321,7 +2323,7 @@ class CurlRunnerApp(tk.Tk):
 
         def worker() -> None:
             status = get_ollama_status(model, base_url)
-            self.after(0, lambda status=status: self._set_ollama_status_badge(status))
+            self._ui.post(lambda status=status: self._set_ollama_status_badge(status))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2451,10 +2453,10 @@ class CurlRunnerApp(tk.Tk):
                 else:
                     result = analyze_response_with_ai(credential, context, model)
                     result = f"[OpenAI: {model}]\n\n{result}"
-                self.after(0, lambda result=result: self._finish_ai_analysis(tab, result, None))
+                self._ui.post(lambda result=result: self._finish_ai_analysis(tab, result, None))
             except Exception as e:
                 error_msg = str(e) or repr(e) or e.__class__.__name__
-                self.after(0, lambda error_msg=error_msg: self._finish_ai_analysis(tab, "", error_msg))
+                self._ui.post(lambda error_msg=error_msg: self._finish_ai_analysis(tab, "", error_msg))
 
         threading.Thread(target=worker, daemon=True).start()
 

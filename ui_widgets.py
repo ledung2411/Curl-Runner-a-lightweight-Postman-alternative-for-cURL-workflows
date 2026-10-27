@@ -1,11 +1,48 @@
 # ui_widgets.py — Widget helpers dùng chung toàn app
 # type: ignore
+import queue
 import tkinter as tk
+import traceback
 from tkinter import font as tkfont
 from constants import (
     BG, BG3, BORDER, TEXT, TEXT_DIM, ACCENT, FONT_FAMILY, FONT_FAMILY_MONO,
     ACTIVE_TEXT, SURFACE_HOVER,
 )
+
+
+class MainThreadDispatcher:
+    """
+    Cho worker thread gửi callback về main thread của Tk.
+
+    Tkinter chỉ an toàn khi mọi lệnh Tk chạy trên main thread; gọi widget.after() từ
+    thread khác chỉ "tình cờ" chạy được với một số bản Tcl/Tk 8.6 và bị bỏ qua hoàn toàn
+    với Tcl/Tk 9. Worker đẩy callback vào queue, main thread lấy ra định kỳ.
+    """
+
+    def __init__(self, widget: tk.Misc, interval_ms: int = 25):
+        self._widget = widget
+        self._interval = interval_ms
+        self._queue: "queue.SimpleQueue" = queue.SimpleQueue()
+        widget.after(interval_ms, self._drain)
+
+    def post(self, func, *args) -> None:
+        """Gọi được từ bất kỳ thread nào."""
+        self._queue.put((func, args))
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                func, args = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                func(*args)
+            except Exception:
+                traceback.print_exc()
+        try:
+            self._widget.after(self._interval, self._drain)
+        except tk.TclError:
+            pass   # widget đã bị huỷ
 
 
 def make_button(parent: tk.Widget, text: str, cmd,

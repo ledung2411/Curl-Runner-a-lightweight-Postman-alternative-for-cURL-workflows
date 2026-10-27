@@ -82,6 +82,14 @@ Xem hướng dẫn chi tiết tại [USER_MANUAL.md](USER_MANUAL.md).
 pip install -r requirements.txt
 ```
 
+Nếu pip báo `No matching distribution found for ttkbootstrap>=1.20.3` là máy đang dùng Python cũ hơn 3.10 (`python --version`). Cài Python mới rồi dùng đúng bản đó:
+
+```powershell
+winget install -e --id Python.Python.3.12
+py -3.12 -m pip install -r requirements.txt
+py -3.12 main.py
+```
+
 Nếu muốn đóng gói `.exe`, các dependency trong `requirements.txt` đã bao gồm PyInstaller:
 
 ```bash

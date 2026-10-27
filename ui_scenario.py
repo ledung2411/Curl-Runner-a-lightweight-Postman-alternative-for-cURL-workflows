@@ -21,6 +21,7 @@ from scenario_engine import run_scenario, runnable_steps, safe_group, split_test
 import store
 from scenario_report import build_scenario_report, export_scenario_report
 from ui_theme import apply_modern_theme
+from ui_widgets import MainThreadDispatcher
 
 if TYPE_CHECKING:
     from app import CurlRunnerApp
@@ -45,6 +46,7 @@ class ScenarioWindow(tk.Toplevel):
         self.stop_event = threading.Event()
         self.running = False
 
+        self._ui = MainThreadDispatcher(self)   # worker thread → main thread
         self._setup_fonts()
         self._ensure_default_scenario()
         self._build_ui()
@@ -61,11 +63,12 @@ class ScenarioWindow(tk.Toplevel):
         self.destroy()
 
     def _post(self, callback) -> None:
-        """Đẩy callback về main thread; bỏ qua nếu cửa sổ đã đóng."""
-        try:
-            self.after(0, callback)
-        except (tk.TclError, RuntimeError):
-            pass
+        """Đẩy callback về main thread (gọi được từ worker thread)."""
+        self._ui.post(self._run_if_open, callback)
+
+    def _run_if_open(self, callback) -> None:
+        if self.winfo_exists():   # cửa sổ có thể đã đóng khi worker còn chạy
+            callback()
 
     def _setup_fonts(self) -> None:
         self.fn_mono  = tkfont.Font(family=FONT_FAMILY_MONO, size=10)
