@@ -1,7 +1,10 @@
 # Curl Runner — Đánh giá, đề xuất cải tiến & lộ trình
 
 Tài liệu này tổng hợp kết quả review toàn bộ mã nguồn (bản Python/Tkinter và bản WinUI/C#),
-các lỗi đã được sửa trong nhánh `claude/jolly-pasteur-526r49`, các vấn đề còn tồn tại và lộ trình đề xuất.
+các lỗi đã được sửa, so sánh với Bruno/Postman, các vấn đề còn tồn tại và lộ trình đề xuất.
+
+**Cập nhật:** đã hoàn thành giai đoạn 0 và 4 hạng mục ưu tiên của giai đoạn 2–3 (CLI cho CI, Tests cho từng request,
+import Postman/Bruno/HAR, biến bí mật + che history) — xem mục 6. Bản WinUI chưa có các tính năng mới này.
 
 ---
 
@@ -18,7 +21,7 @@ các lỗi đã được sửa trong nhánh `claude/jolly-pasteur-526r49`, các 
 
 ---
 
-## 2. Các lỗi đã sửa trong nhánh này
+## 2. Các lỗi đã sửa (review lần 1)
 
 Mỗi lỗi dưới đây đều có unit test; 18/21 test mới **thất bại trên code cũ** và **qua trên code mới**.
 
@@ -82,8 +85,7 @@ Mỗi lỗi dưới đây đều có unit test; 18/21 test mới **thất bại 
 ## 3. Vấn đề còn tồn tại (chưa sửa) — xếp theo ưu tiên
 
 ### 🔴 Cao
-1. **Lộ bí mật trong history**: `history.json` lưu nguyên lệnh curl (token, cookie, mật khẩu `-u`) dạng plain text, tối đa 500 bản ghi.
-   → Đề xuất: lưu curl đã thay giá trị nhạy cảm bằng `{{biến}}` hoặc redact; tuỳ chọn "không lưu history cho request có Authorization".
+1. ~~**Lộ bí mật trong history**~~ ✅ Đã xử lý ở bản Python (mục 6.4). Bản WinUI vẫn lưu curl nguyên văn.
 2. **Pre-request script không có sandbox** (Python `exec` toàn quyền). Đã ghi cảnh báo trong tài liệu.
    → Đề xuất: khi import collection/scenario từ ngoài, hiển thị script và yêu cầu xác nhận trước khi chạy lần đầu.
 3. **Không huỷ được request đang chạy**: Repeat tối đa 1.000 lần, timeout dài → chỉ có thể đợi.
@@ -93,15 +95,16 @@ Mỗi lỗi dưới đây đều có unit test; 18/21 test mới **thất bại 
 ### 🟠 Trung bình
 5. **`app.py` 2.600 dòng, một class**: khó test, khó sửa. UI, state, I/O trộn lẫn.
 6. **Logic bị nhân đôi**: parser curl thứ 2 trong `ui_compare._normalize_curl` (vẫn dùng `shlex`, không có các sửa ở trên); rule engine scenario viết 2 lần (Python + C#) dễ lệch hành vi.
+   (Trong bản Python, GUI và CLI đã dùng chung `scenario_engine.py`.)
 7. **Parity Python ↔ C#** chưa đủ: WinUI chưa hỗ trợ multipart `-F`, `-d @file`, `$'...'`; pre-request script WinUI chỉ hỗ trợ tập con cú pháp.
 8. **File dữ liệu không có `schema_version`**: 2 app đọc chung, một bên đổi format là bên kia hỏng.
 9. **`-d` không có Content-Type**: curl thật tự gửi `application/x-www-form-urlencoded`, app không gửi → khác hành vi curl.
-10. **Scenario**: chưa có pre-request script/option SSL theo step, chưa có retry, JSONPath chỉ hỗ trợ `.key` và `[index]`.
+10. **Scenario**: chưa có pre-request script/option SSL theo step, chưa có retry; JSONPath đã thêm `[-1]` và `['key']` nhưng chưa có filter.
 11. **Type checking gần như tắt** (`pyrightconfig.json` tắt ~20 rule, `# type: ignore` đầu file).
 
 ### 🟡 Thấp
 12. Header có ký tự ngoài latin-1 (tiếng Việt) bị `http.client` từ chối — nên báo lỗi thân thiện.
-13. Report CSV có thể bị "CSV injection" khi tên step bắt đầu bằng `=`, `+`, `-`, `@`.
+13. ~~Report CSV có thể bị "CSV injection"~~ ✅ Đã xử lý.
 14. Cửa sổ Scenario/Compare/Converter không áp dụng cài đặt font đã lưu.
 15. Treeview của Tk có thể trả giá trị số dạng `int` (mất số 0 đầu: `007` → `7`) — nên dùng `tree.set()` hoặc lưu dữ liệu song song ngoài widget.
 
@@ -138,14 +141,55 @@ Mỗi lỗi dưới đây đều có unit test; 18/21 test mới **thất bại 
 
 | Giai đoạn | Thời gian (ước tính) | Mục tiêu | Hạng mục chính | Tiêu chí hoàn thành |
 |---|---|---|---|---|
-| **0. Ổn định** ✅ | Đã làm trong nhánh này | Không mất dữ liệu, parse đúng curl phổ biến | Mục 2: parser, store nguyên tử, sửa lỗi UI, 21 test mới, CI | CI xanh; `dotnet test` xanh trên Windows |
+| **0. Ổn định** ✅ | Đã xong | Không mất dữ liệu, parse đúng curl phổ biến | Mục 2: parser, store nguyên tử, sửa lỗi UI, 21 test mới, CI | CI xanh; `dotnet test` xanh trên Windows |
 | **1. Nền móng** | 2–3 tuần | Dễ bảo trì, đảm bảo parity | Tách `app.py`; Compare dùng parser chung; golden test Python + C#; `schema_version`; bật dần pyright `standard`; CI chạy thêm `dotnet test` trên `windows-latest` | `app.py` < 800 dòng; golden test chạy ở 2 nền tảng |
-| **2. An toàn & UX** | 2–3 tuần | Không lộ bí mật, không đơ UI | Secret vars + redact history; Cancel request; Ollama check bất đồng bộ; xác nhận script khi import; CSV-injection; thông báo lỗi header ngoài latin-1 | Không còn token plain text trong `history.json` mặc định |
-| **3. Năng suất** | 3–4 tuần | Thay thế được Postman cho luồng cURL | Import Postman/HAR/OpenAPI; export code; CLI headless + JUnit cho CI; thống kê Repeat; timing chi tiết | Chạy được scenario trong GitHub Actions bằng CLI |
+| **2. An toàn & UX** | 2–3 tuần | Không lộ bí mật, không đơ UI | ✅ Secret vars + redact history; ✅ CSV-injection; ⬜ Cancel request; ⬜ Ollama check bất đồng bộ; ⬜ xác nhận script khi import; ⬜ thông báo lỗi header ngoài latin-1 | Không còn token plain text trong `history.json` mặc định |
+| **3. Năng suất** | 3–4 tuần | Thay thế được Postman cho luồng cURL | ✅ Import Postman/Bruno/HAR; ⬜ OpenAPI; ⬜ export code; ✅ CLI headless + JUnit + data-driven; ✅ Tests cho từng request; ⬜ thống kê Repeat; ⬜ timing chi tiết | Chạy được scenario trong GitHub Actions bằng CLI |
 | **4. Hợp nhất & phát hành** | Liên tục | Một sản phẩm, phát hành chuyên nghiệp | Chọn WinUI là UI chính trên Windows, Python core cho CLI/đa nền tảng; GitHub Releases tự động (exe/zip đã ký); auto-update; tài liệu song ngữ | Release có changelog, artifact ký số, cài đặt 1 click |
 
-### Thứ tự ưu tiên ngay sau khi merge nhánh này
-1. Chạy `dotnet test winui/CurlRunner.WinUI.sln` trên Windows để xác nhận phần sửa C#.
-2. Redact history (mục 3.1) — rủi ro lộ token cao nhất hiện tại.
+### Thứ tự ưu tiên tiếp theo
+1. Chạy `dotnet test winui/CurlRunner.WinUI.sln` trên Windows để xác nhận phần sửa C#; thêm job `windows-latest` vào CI.
+2. Nút **Cancel** request + kiểm tra Ollama bất đồng bộ (mục 3.3, 3.4).
 3. Cho `ui_compare.py` dùng `core.shell_split`/`parse_curl` (xoá parser trùng).
-4. Thêm job `windows-latest` chạy `dotnet test` vào CI.
+4. Đưa 4 tính năng mới sang WinUI (hoặc quyết định WinUI chỉ là UI, gọi lõi Python/CLI).
+5. Sinh code mẫu (Python/JS/C#) và import OpenAPI — 2 khoảng trống còn lại so với Bruno/Postman.
+
+---
+
+## 6. Đã làm sau review (bản Python)
+
+| # | Hạng mục | Nội dung | Test |
+|---|---|---|---|
+| 6.1 | **CLI cho CI** (`cli.py`) | `run` scenario/collection/Postman/Bruno; exit code 0/1/2; report JUnit/HTML/CSV/JSON; data-driven `--data` CSV/JSON; biến `--var`, `CURLRUNNER_VAR_*`, environment của app hoặc Postman; `request`, `import`, `list` | `tests/test_cli.py` |
+| 6.2 | **Engine dùng chung** (`scenario_engine.py`) | Extract/assert + runner tách khỏi Tk; thêm `time < N`, `header X exists`, `[-1]`, `['key']`, biến `{{...}}` trong rule | `tests/test_scenario_engine.py` |
+| 6.3 | **Tests cho từng request** | Tab ✅ Tests, kết quả ở tab Tests của response, lưu giá trị vào environment, lưu cùng collection, dùng cho CLI và Scenario | kiểm thử logic với tkinter giả lập |
+| 6.4 | **Biến bí mật** (`redaction.py`) | Nhận diện theo tên + đánh dấu thủ công; che trong history (`{{biến}}` / `[REDACTED]`), Info, AI; Environment Manager hiện `••••••`; che lại history cũ | `tests/test_redaction.py` |
+| 6.5 | **Import** (`importers.py`) | Postman v2.x + environment, Bruno, HAR; dịch test phổ biến; ghi chú phần không chuyển được | `tests/test_importers.py` (có chạy end-to-end) |
+
+---
+
+## 7. So sánh với Bruno / Postman (sau khi làm mục 6)
+
+| Tiêu chí | Curl Runner | Bruno | Postman |
+|---|---|---|---|
+| Curl là định dạng gốc (dán – chạy – lưu – mở lại vẫn là curl) | ✅ | ⚠️ chuyển sang `.bru` | ⚠️ chuyển sang request Postman |
+| So sánh nhiều request/response (diff theo key) | ✅ | ❌ | ❌ |
+| AI phân tích response chạy local, miễn phí | ✅ Ollama | ❌ | ⚠️ Postbot (cloud) |
+| Scenario: group tuần tự, step trong group song song | ✅ | ⚠️ tuần tự | ✅ (runner + load test) |
+| Assertion không cần code | ✅ Scenario + từng request | ✅ | ⚠️ JS |
+| Chạy trên CI, JUnit, data-driven | ✅ `cli.py` | ✅ `bru run` | ✅ Newman / Postman CLI |
+| Import collection từ công cụ khác | ✅ Postman, Bruno, HAR | ✅ Postman, Insomnia, OpenAPI | ✅ nhiều định dạng |
+| Biến bí mật | ⚠️ che hiển thị/history, file vẫn lưu văn bản | ✅ | ✅ Vault |
+| Không cần tài khoản, offline | ✅ | ✅ | ⚠️ |
+| Giao thức ngoài HTTP (GraphQL UI, gRPC, WebSocket) | ❌ (GraphQL gửi dạng JSON) | ✅ | ✅ |
+| Auth helper (OAuth2, AWS SigV4, Digest) | ❌ | ✅ | ✅ |
+| Script JS trước/sau request | ⚠️ Python trước request | ✅ | ✅ |
+| Folder, biến cấp collection | ❌ (folder import thành tiền tố tên) | ✅ | ✅ |
+| Sinh code mẫu, OpenAPI import | ❌ | ✅ | ✅ |
+| Làm việc nhóm | ❌ file JSON | ✅ git | ✅ cloud |
+| Đa nền tảng | ⚠️ Python chạy được, WinUI chỉ Windows | ✅ | ✅ |
+
+Bảng dựa trên hiểu biết về Bruno/Postman tại thời điểm viết; hai công cụ này cập nhật nhanh.
+
+**Định vị đề xuất:** công cụ debug *curl-first* — dán từ DevTools/log, chạy, so sánh, phân tích bằng AI local,
+rồi đưa thẳng lên CI bằng `cli.py`. Không cạnh tranh trực diện về nền tảng làm việc nhóm hay mock/monitor.

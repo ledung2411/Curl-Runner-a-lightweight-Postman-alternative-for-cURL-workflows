@@ -48,6 +48,10 @@ Xem hướng dẫn chi tiết tại [USER_MANUAL.md](USER_MANUAL.md).
 | 🔁 **Auto call N times** | Tự động gọi cùng request nhiều lần để test retry, cache, rate limit |
 | ▶ **API Scenario** | Lưu workflow nhiều API, chạy group tuần tự và step cùng group song song |
 | 📊 **Scenario Report** | Export kết quả scenario sang HTML, CSV hoặc JUnit XML cho tester và CI |
+| ✅ **Tests cho từng request** | Assertion (`status == 200`, `json $.ok == true`, `time < 800`...) chạy sau mỗi response, lưu giá trị response vào environment |
+| 🖥 **CLI cho CI/CD** | `python cli.py run` chạy scenario/collection không cần giao diện, exit code + JUnit, data-driven từ CSV |
+| ⇪ **Import Postman / Bruno / HAR** | Chuyển collection, environment, auth và test cơ bản thành lệnh curl |
+| 🔒 **Biến bí mật & history an toàn** | Che token/mật khẩu trong history, AI và màn hình; ẩn giá trị biến bí mật |
 | ⇄ **Compare đa loại** | So sánh Curl, JSON, Text/String với highlight khác biệt |
 | ⇆ **String/JSON Converter** | Pretty/minify JSON, escape/unescape JSON string, lines to JSON array |
 | 📋 **History** | Tự động lưu lịch sử request, tìm kiếm, tái sử dụng |
@@ -417,6 +421,72 @@ Sau khi scenario chạy xong, nhấn **Export Report** và chọn:
 
 Report chỉ chứa method, URL đã redact query nhạy cảm, status, thời gian, assertion và tên biến extract. App không export header, full curl hoặc giá trị token/secret đã extract.
 
+### Tests cho từng request
+
+Mỗi tab request có tab **✅ Tests**. Sau khi có response, các dòng điều kiện được kiểm tra và hiện ở tab **Tests** của response (dừng ở dòng FAIL đầu tiên):
+
+```text
+status == 200
+time < 1000
+header Content-Type contains json
+json $.data.items[0].id == {{user_id}}
+# Lưu giá trị vào environment đang chọn → dùng lại bằng {{token}}
+token = json:$.data.token
+```
+
+Tests được lưu cùng request trong Collection, đi theo khi **Import Open Tabs** vào Scenario và được CLI dùng khi chạy collection.
+
+### Chạy trên CI bằng CLI
+
+`cli.py` chạy scenario/collection không cần giao diện. Exit code `0` = tất cả PASS, `1` = có step FAIL, `2` = sai cấu hình.
+
+```bash
+# Scenario đã lưu trong app (~/.curl_runner)
+python cli.py run --scenario "Checkout Smoke" --env QA --report reports/junit.xml
+
+# Scenario export ra file (Scenario → Export Report → Scenario JSON), commit vào repo
+python cli.py run --file ci/checkout.scenario.json --env-file ci/envs.json --env QA
+
+# Chạy lặp theo dữ liệu: mỗi dòng CSV là 1 lần chạy, cột = biến {{...}}
+python cli.py run --file ci/signup.scenario.json --data ci/users.csv --report reports/signup.html
+
+# Chạy thẳng collection Postman / thư mục Bruno (thay Newman / bru run)
+python cli.py run --from postman_collection.json --env-file postman_environment.json
+
+# Gửi 1 request, body ra stdout, assertion → exit code
+python cli.py request "curl {{base}}/health" --env QA -a "status == 200" -a "json $.ok == true"
+```
+
+Biến lấy theo thứ tự ưu tiên tăng dần: environment → biến môi trường OS `CURLRUNNER_VAR_<tên>` → cột CSV `--data` → `--var tên=giá_trị`. Ví dụ GitHub Actions:
+
+```yaml
+- run: pip install requests charset-normalizer
+- run: python cli.py run --file ci/checkout.scenario.json --env-file ci/envs.json --env QA --report reports/junit.xml
+  env:
+    CURLRUNNER_VAR_token: ${{ secrets.API_TOKEN }}
+```
+
+### Import Postman / Bruno / HAR
+
+Collections → **⇪ Import** (hoặc `python cli.py import <file|thư mục>`):
+
+| Nguồn | Được chuyển đổi |
+|---|---|
+| Postman collection v2.0/v2.1 | Folder (thành tên `Folder / Request`), headers, body raw/urlencoded/form-data/GraphQL, auth bearer/basic/API key (kể cả kế thừa từ folder/collection), biến collection, test phổ biến (`pm.response.to.have.status`, `pm.environment.set(... pm.response.json()...)`) |
+| Postman environment | Biến (bỏ biến bị tắt) |
+| Bruno (thư mục có `bruno.json`) | File `.bru`, environments, auth, body, khối `assert` và `vars:post-response` |
+| HAR (DevTools → Network → Save all as HAR) | Chỉ các request XHR/fetch |
+
+Script JS không dịch được sẽ được liệt kê trong thông báo sau khi import để bạn kiểm tra lại.
+
+### Biến bí mật
+
+- Biến có tên giống `token`, `secret`, `password`, `api_key`... (hoặc được đánh dấu ở cột **Bí mật** trong Environment Manager) được coi là bí mật: hiện `••••••`, có nút 👁 để xem.
+- Trước khi lưu **History**, giá trị bí mật được thay bằng `{{tên_biến}}` (mở lại vẫn chạy được), token dán thẳng trong `Authorization`, cookie, `-u`, `?token=`, trường `password` trong body được thay bằng `[REDACTED]`. Tắt/bật hoặc che toàn bộ history cũ bằng nút **🔒** dưới History.
+- Giá trị bí mật cũng được che trong panel **Info** và trong dữ liệu gửi cho **AI Analyze**.
+
+> `environments.json` vẫn lưu giá trị dạng văn bản trên máy. Không commit file này vào repo; trên CI dùng `CURLRUNNER_VAR_*` từ secret của CI.
+
 ### Tìm kiếm trong response
 
 Response panel có thanh **Search** để tìm trong tab đang mở:
@@ -561,8 +631,12 @@ Curl-runner/
 ├── ui_compare.py        # Compare Curl / JSON / Text popup
 ├── ui_converter.py      # Convert String / JSON popup
 ├── ui_ollama_setup.py   # Ollama local AI setup popup
-├── ui_scenario.py       # API Scenario runner
-├── scenario_report.py   # HTML / CSV / JUnit report exporters
+├── ui_scenario.py       # API Scenario window
+├── scenario_engine.py   # Extract/assert rules + scenario runner (dùng chung GUI/CLI)
+├── scenario_report.py   # HTML / CSV / JUnit / JSON report exporters
+├── cli.py               # CLI: run / request / import / list (cho CI)
+├── importers.py         # Import Postman / Bruno / HAR
+├── redaction.py         # Biến bí mật, che token trong history/AI
 ├── ui_widgets.py        # Shared UI widgets
 ├── tests/               # Standard-library unit tests
 ├── requirements.txt     # Runtime/build dependencies
@@ -577,7 +651,9 @@ C:\Users\<tên>\.curl_runner\
 ├── history.json         # Lịch sử request (tối đa 500)
 ├── collections.json     # Collections
 ├── environments.json    # Environments & variables
-└── scenarios.json       # API Scenario workflows
+├── scenarios.json       # API Scenario workflows
+├── settings.json        # Che history, danh sách biến bí mật
+└── *.corrupt-*.bak      # Bản sao file JSON bị hỏng (nếu có), để khôi phục thủ công
 ```
 
 ---
@@ -651,6 +727,12 @@ Thêm vào `.vscode/settings.json` để tắt Pylance warnings với tkinter:
 - [x] So sánh Curl / JSON / Text / String (diff n panels)
 - [x] Tìm kiếm trong response (Ctrl+F)
 - [x] AI phân tích lỗi response bằng Ollama local
+- [x] Tests (assertion) cho từng request
+- [x] CLI cho CI: chạy scenario/collection, JUnit, data-driven CSV
+- [x] Import Postman / Bruno / HAR
+- [x] Biến bí mật, che token trong history
+
+Lộ trình chi tiết và so sánh với Bruno/Postman: [IMPROVEMENT_ROADMAP.md](IMPROVEMENT_ROADMAP.md)
 
 ---
 

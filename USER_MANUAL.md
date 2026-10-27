@@ -16,8 +16,11 @@ Curl Runner là desktop API client nhẹ, tập trung vào workflow thường g�
 - Tìm kiếm trong response
 - Tự gọi API nhiều lần bằng Repeat
 - Chạy API Scenario theo sequential/parallel groups
-- Extract biến từ response và assertion kết quả
+- Extract biến từ response và assertion kết quả (cho Scenario và cho từng request)
 - Dùng AI để phân tích lỗi response bằng Ollama local hoặc OpenAI Billing API
+- Import Postman / Bruno / HAR
+- Chạy scenario/collection trên CI bằng `cli.py`
+- Che token/mật khẩu trong history, AI và màn hình
 
 ---
 
@@ -726,6 +729,7 @@ body not_contains error
 ```text
 header Content-Type contains json
 header X-Request-Id != ""
+header X-Request-Id exists
 header Cache-Control == no-cache
 ```
 
@@ -745,7 +749,9 @@ Hỗ trợ dạng đơn giản:
 ```text
 $.data.token
 $.data.items[0].id
+$.data.items[-1].id      # phần tử cuối
 $.users[2].email
+$['full name']           # key có khoảng trắng / ký tự đặc biệt
 ```
 
 Chưa hỗ trợ filter phức tạp như:
@@ -754,7 +760,16 @@ Chưa hỗ trợ filter phức tạp như:
 $.items[?(@.id==1)]
 ```
 
-### 15.6 Khi assertion fail
+### 15.6 Thời gian phản hồi và biến trong assertion
+
+```text
+time < 800                       # ms
+json $.data.id == {{user_id}}    # biến environment / extract / --var đều dùng được
+```
+
+`json <path> exists` trả về FAIL (không còn là ERROR) khi path không tồn tại.
+
+### 15.7 Khi assertion fail
 
 Step sẽ fail và log ghi rule fail.
 
@@ -830,7 +845,151 @@ status in 200,204
 
 ---
 
-## 17. Dữ liệu lưu ở đâu
+## 17. Tests cho từng request
+
+Mỗi tab request có tab **✅ Tests**, chạy sau mỗi lần nhận response (với Repeat: chạy trên response cuối).
+
+### 17.1 Assertion
+
+Dùng đúng cú pháp của Scenario (chương 15), mỗi dòng một điều kiện, dừng ở dòng FAIL đầu tiên:
+
+```text
+status == 200
+time < 1000
+json $.data.id exists
+```
+
+Kết quả hiện ở tab **Tests** của response (✓ / ✗ trên nhãn tab). Status bar của request ghi `Tests PASS` / `Tests FAIL`; khi FAIL, panel tự chuyển sang tab Tests.
+
+### 17.2 Lưu giá trị response vào environment
+
+Dòng dạng extractor lưu giá trị vào **environment đang chọn** (giống `pm.environment.set` của Postman):
+
+```text
+token = json:$.data.token
+request_id = header:X-Request-Id
+```
+
+Request sau dùng lại bằng `{{token}}`.
+
+### 17.3 Lưu và tái sử dụng
+
+- **➕ Collection** lưu Tests cùng request (field `extractors` / `assertions`).
+- Mở request từ Collection sẽ nạp lại Tests.
+- Scenario → **Import Open Tabs** chuyển Tests thành Extractors/Assertions của step.
+- `python cli.py run --collection <tên>` chạy collection với Tests đã lưu.
+
+---
+
+## 18. Import Postman / Bruno / HAR
+
+Collections → **⇪ Import**:
+
+- **Postman collection / environment, HAR (file)...**: chọn file `.json` / `.har` / `.bru`.
+- **Bruno collection (thư mục)...**: chọn thư mục chứa `bruno.json`.
+
+Dữ liệu import được tạo thành collection/environment mới (trùng tên thì thêm hậu tố `(2)`), không ghi đè dữ liệu cũ. Sau khi import, app liệt kê các phần không chuyển đổi được (script JS, kiểu auth lạ, body dạng file).
+
+| Nguồn | Hỗ trợ |
+|---|---|
+| Postman v2.0/v2.1 | Folder, headers, raw/urlencoded/form-data/GraphQL, bearer/basic/API key (kể cả kế thừa), biến collection, test phổ biến |
+| Postman environment | Biến đang bật |
+| Bruno | `.bru` requests, environments (biến `vars:secret` cần điền lại), `assert`, `vars:post-response` |
+| HAR | Request XHR/fetch; cảnh báo vì HAR chứa cookie/token thật |
+
+CLI tương đương: `python cli.py import <file|thư mục>` (thêm `--dry-run` để xem trước).
+
+---
+
+## 19. Chạy bằng CLI / CI
+
+`cli.py` dùng chung engine với cửa sổ Scenario.
+
+### 19.1 Các lệnh
+
+| Lệnh | Mục đích |
+|---|---|
+| `python cli.py run ...` | Chạy scenario / collection / collection Postman-Bruno |
+| `python cli.py request "curl ..."` | Gửi 1 request, body ra stdout, status/assertion ra stderr |
+| `python cli.py import <path>` | Import vào dữ liệu của app |
+| `python cli.py list scenarios\|environments\|collections` | Xem dữ liệu đã lưu |
+
+### 19.2 Chọn thứ cần chạy
+
+```bash
+python cli.py run --scenario "Checkout Smoke"          # trong ~/.curl_runner/scenarios.json
+python cli.py run --all                                 # tất cả scenario
+python cli.py run --file ci/checkout.scenario.json      # file export (Scenario → Export Report → Scenario JSON)
+python cli.py run --collection Smoke                    # collection, mỗi request 1 group tuần tự
+python cli.py run --from postman_collection.json        # chạy thẳng Postman / Bruno
+```
+
+### 19.3 Biến
+
+Thứ tự ưu tiên tăng dần:
+
+1. Environment: `--env QA` (từ `environments.json`) hoặc `--env-file` (file của app, file JSON phẳng, hoặc export environment của Postman)
+2. Biến môi trường OS `CURLRUNNER_VAR_<tên>` — dùng cho secret trên CI
+3. Cột của file `--data`
+4. `--var tên=giá_trị`
+
+### 19.4 Data-driven
+
+`--data users.csv` (CSV có dòng tiêu đề) hoặc `.json` (list object): scenario chạy 1 lần cho mỗi dòng, report ghi `Tên scenario [#n] › Step`.
+
+### 19.5 Report và exit code
+
+`--report` dùng nhiều lần, định dạng theo đuôi file: `.xml` (JUnit), `.html`, `.csv`, `.json`. Thư mục được tạo tự động.
+
+| Exit code | Ý nghĩa |
+|---|---|
+| `0` | Tất cả step PASS |
+| `1` | Có step FAIL hoặc không được chạy (do stop on fail) |
+| `2` | Sai tham số / không tìm thấy file, scenario, environment |
+
+Tuỳ chọn khác: `--no-stop-on-fail`, `-k/--insecure`, `-v/--verbose`.
+
+### 19.6 GitHub Actions
+
+```yaml
+- run: pip install requests charset-normalizer
+- run: python cli.py run --file ci/checkout.scenario.json --env-file ci/envs.json --env QA --report reports/junit.xml
+  env:
+    CURLRUNNER_VAR_token: ${{ secrets.API_TOKEN }}
+```
+
+---
+
+## 20. Biến bí mật & lịch sử
+
+### 20.1 Biến nào là bí mật
+
+- Tên chứa `token`, `secret`, `password`/`pass`/`pwd`, `api_key`, `cookie`, `session`, `credential`, `private`... được nhận diện tự động (cột **Bí mật** hiện `🔒 auto`).
+- Biến khác: double-click cột **Bí mật** trong Environment Manager để đánh dấu `🔒`.
+
+Giá trị bí mật hiển thị `••••••`; nút **👁 Hiện giá trị** để xem/sửa.
+
+### 20.2 Lịch sử không lưu token
+
+Trước khi lưu History:
+
+- Giá trị của biến bí mật → `{{tên_biến}}`, nên mở lại request vẫn chạy được.
+- Token dán thẳng → `[REDACTED]`: header `Authorization`/`Cookie`/`X-Api-Key`, `-u user:pass`, `--oauth2-bearer`, query `?token=`/`?api_key=`, trường `password`/`token`/`secret` trong body JSON/form.
+
+Nút **🔒** dưới History: bật/tắt tính năng này (mặc định bật) và **Che bí mật trong toàn bộ lịch sử hiện có**.
+
+### 20.3 Che ở nơi khác
+
+- Panel **Info**: giá trị bí mật hiện `••••••`.
+- **AI Analyze**: giá trị bí mật được thay bằng `[REDACTED]` trước khi gửi (ngoài cơ chế redact theo tên key đã có).
+
+### 20.4 Giới hạn
+
+`environments.json` vẫn lưu giá trị bí mật dạng văn bản trên máy. Không commit file này; trên CI dùng `CURLRUNNER_VAR_*`.
+
+---
+
+## 21. Dữ liệu lưu ở đâu
 
 App lưu dữ liệu trong:
 
@@ -847,12 +1006,14 @@ Các file chính:
 | `environments.json` | Environments |
 | `scenarios.json` | API Scenarios |
 | `font_settings.json` | Font settings |
+| `settings.json` | Che history, danh sách biến bí mật đánh dấu thủ công |
+| `*.corrupt-*.bak` | Bản sao file JSON bị hỏng (app tạo lại file mới thay vì ghi đè mất dữ liệu) |
 
 ---
 
-## 18. Troubleshooting
+## 22. Troubleshooting
 
-### 18.1 App không chạy
+### 22.1 App không chạy
 
 Thử chạy bằng terminal để xem lỗi:
 
@@ -866,7 +1027,7 @@ Kiểm tra dependencies:
 pip install -r requirements.txt
 ```
 
-### 18.2 Curl parse lỗi
+### 22.2 Curl parse lỗi
 
 Kiểm tra:
 
@@ -875,21 +1036,21 @@ Kiểm tra:
 - Body JSON có escape đúng không
 - Windows multiline dùng `^`, Linux/macOS multiline dùng `\`
 
-### 18.3 SSL lỗi
+### 22.3 SSL lỗi
 
 Nếu API dev dùng self-signed certificate:
 
 - Tắt **Verify SSL**
 - Hoặc dùng curl flag `-k`
 
-### 18.4 Response lỗi encoding
+### 22.4 Response lỗi encoding
 
 Thử:
 
 - Bật **Auto Decode**
 - Nếu vẫn lỗi, tắt Auto Decode để xem raw text
 
-### 18.5 Scenario không truyền được token
+### 22.5 Scenario không truyền được token
 
 Kiểm tra:
 
@@ -898,7 +1059,7 @@ Kiểm tra:
 - Extractor JSON path đúng chưa
 - Response có token thật không
 
-### 18.6 Assertion JSON fail
+### 22.6 Assertion JSON fail
 
 Kiểm tra:
 
@@ -909,9 +1070,9 @@ Kiểm tra:
 
 ---
 
-## 19. Best practices cho dev/tester
+## 23. Best practices cho dev/tester
 
-### 19.1 Tách environment
+### 23.1 Tách environment
 
 Nên tạo environment riêng:
 
@@ -920,11 +1081,11 @@ Nên tạo environment riêng:
 - Staging
 - Production read-only
 
-### 19.2 Không lưu secret thật trong repo
+### 23.2 Không lưu secret thật trong repo
 
 App lưu local trong `~\.curl_runner`, không nên commit file này lên Git.
 
-### 19.3 Dùng Scenario group rõ ràng
+### 23.3 Dùng Scenario group rõ ràng
 
 Gợi ý:
 
@@ -932,7 +1093,7 @@ Gợi ý:
 - Group 2: các API kiểm tra parallel
 - Group 3: cleanup/logout
 
-### 19.4 Assertion nên ngắn và rõ
+### 23.4 Assertion nên ngắn và rõ
 
 Tốt:
 
@@ -943,7 +1104,7 @@ json $.data.id exists
 
 Không nên bắt quá nhiều chi tiết không ổn định như timestamp chính xác.
 
-### 19.5 Repeat dùng cẩn thận
+### 23.5 Repeat dùng cẩn thận
 
 Repeat hữu ích để test:
 
@@ -956,26 +1117,28 @@ Không nên dùng Repeat lớn trên production API.
 
 ---
 
-## 20. Giới hạn hiện tại
+## 24. Giới hạn hiện tại
 
 Những phần app chưa có hoặc còn MVP:
 
 - Chưa delay giữa step/group
-- Chưa data-driven test từ CSV/JSON
+- Data-driven (CSV/JSON) mới có trên CLI, chưa có trong cửa sổ Scenario
 - JSON path chỉ hỗ trợ dạng cơ bản
 - Parallel group chưa có per-step dependency bên trong cùng group
 - Stop không huỷ request đang chạy, chỉ dừng group tiếp theo
 
 ---
 
-## 21. Roadmap gợi ý
+## 25. Roadmap gợi ý
 
 Các chức năng nên thêm tiếp:
 
 1. Delay per step/group
-2. Data-driven testing bằng CSV/JSON
+2. Data-driven testing trong cửa sổ Scenario (CLI đã có `--data`)
 3. JSON schema validation
-4. OpenAPI/Postman import
+4. OpenAPI import (Postman / Bruno / HAR đã có)
 5. Per-step retry policy
 6. Scenario result history
-7. CI-friendly CLI runner cho scenario
+7. Nút Cancel cho request đang chạy
+
+Xem thêm [IMPROVEMENT_ROADMAP.md](IMPROVEMENT_ROADMAP.md).
