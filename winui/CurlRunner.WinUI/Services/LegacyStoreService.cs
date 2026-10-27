@@ -71,9 +71,28 @@ public sealed class LegacyStoreService
             await using var stream = File.OpenRead(path);
             return await JsonSerializer.DeserializeAsync<T>(stream, JsonOptions) ?? fallback;
         }
+        catch (JsonException)
+        {
+            // Keep the unreadable file; otherwise the next save would silently replace the
+            // user's history/collections with the empty fallback.
+            BackupUnreadableFile(path);
+            return fallback;
+        }
         catch
         {
             return fallback;
+        }
+    }
+
+    private static void BackupUnreadableFile(string path)
+    {
+        try
+        {
+            File.Copy(path, $"{path}.corrupt-{DateTime.Now:yyyyMMdd-HHmmss}.bak", overwrite: true);
+        }
+        catch
+        {
+            // Best effort: the caller still falls back to defaults.
         }
     }
 

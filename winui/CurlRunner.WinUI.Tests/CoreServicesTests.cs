@@ -146,4 +146,50 @@ public sealed class CoreServicesTests
             if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
         }
     }
+
+    [Fact]
+    public void CurlParser_HandlesAttachedOptionsAndSkipsUnknownOptionValues()
+    {
+        var parsed = CurlParser.Parse(
+            "curl -sSL -o out.json -XPUT -H'Accept: application/json' -d a=1 -d b=2 https://api.test/x");
+
+        Assert.Equal("PUT", parsed.Method);
+        Assert.Equal("https://api.test/x", parsed.Url);
+        Assert.Contains(parsed.Headers, header => header.Key == "Accept" && header.Value == "application/json");
+        Assert.Equal("a=1&b=2", parsed.Body);
+    }
+
+    [Fact]
+    public void CurlParser_SupportsAuthHeadAndBashDoubleQuoteEscapes()
+    {
+        var auth = CurlParser.Parse("curl -u admin:secret https://api.test");
+        Assert.Contains(auth.Headers, header => header.Key == "Authorization" && header.Value == "Basic YWRtaW46c2VjcmV0");
+
+        Assert.Equal("HEAD", CurlParser.Parse("curl -I https://api.test").Method);
+
+        var json = CurlParser.Parse("curl https://api.test -d \"{\\\"msg\\\":\\\"a\\nb\\\"}\"");
+        Assert.Equal("POST", json.Method);
+        Assert.Equal("{\"msg\":\"a\\nb\"}", json.Body);
+
+        Assert.Throws<FormatException>(() => CurlParser.Parse("curl https://api.test -H"));
+    }
+
+    [Fact]
+    public async Task LegacyStore_BacksUpUnreadableFileInsteadOfLosingIt()
+    {
+        var directory = Path.Combine(Path.GetTempPath(), "curl-runner-tests-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(Path.Combine(directory, "history.json"), "[{\"broken\": ");
+            var store = new LegacyStoreService(directory);
+
+            Assert.Empty(await store.LoadHistoryAsync());
+            Assert.Single(Directory.GetFiles(directory, "history.json.corrupt-*.bak"));
+        }
+        finally
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, recursive: true);
+        }
+    }
 }

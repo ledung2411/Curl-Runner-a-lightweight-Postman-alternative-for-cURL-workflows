@@ -1,6 +1,5 @@
 using CurlRunner.WinUI.Models;
 using System.Diagnostics;
-using System.Net.Http.Headers;
 using System.Text;
 
 namespace CurlRunner.WinUI.Services;
@@ -118,7 +117,10 @@ public sealed class ApiClientService
             request.Content = new StringContent(definition.Body, Encoding.UTF8);
             if (!string.IsNullOrWhiteSpace(contentType))
             {
-                request.Content.Headers.ContentType = MediaTypeHeaderValue.Parse(contentType);
+                // MediaTypeHeaderValue.Parse throws on values curl accepts (e.g. a trailing ';'),
+                // so pass the header through unvalidated instead of failing the whole request.
+                request.Content.Headers.Remove("Content-Type");
+                request.Content.Headers.TryAddWithoutValidation("Content-Type", contentType);
             }
         }
 
