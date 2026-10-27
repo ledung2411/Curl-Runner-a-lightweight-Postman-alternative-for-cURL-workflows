@@ -2,6 +2,7 @@
 # type: ignore
 from __future__ import annotations
 
+import json
 import re
 import threading
 import uuid
@@ -16,7 +17,7 @@ from constants import (
     SURFACE_HOVER, SURFACE_ACTIVE, TITLEBAR_BG, FONT_FAMILY, FONT_FAMILY_MONO,
 )
 from core import parse_curl
-from scenario_engine import run_scenario, runnable_steps, safe_group
+from scenario_engine import run_scenario, runnable_steps, safe_group, split_test_rules
 import store
 from scenario_report import build_scenario_report, export_scenario_report
 from ui_theme import apply_modern_theme
@@ -574,7 +575,12 @@ class ScenarioWindow(tk.Toplevel):
             curl = tab._curl_tw.get("1.0", "end").strip()
             if not curl:
                 continue
-            steps.append(self._new_step_dict(tab.name, curl, next_group))
+            step = self._new_step_dict(tab.name, curl, next_group)
+            # Tests của request → extractors/assertions của step
+            tests_tw = getattr(tab, "_tests_tw", None)
+            tests = tests_tw.get("1.0", "end") if tests_tw is not None else getattr(tab, "tests", "")
+            step["extractors"], step["assertions"] = split_test_rules(tests)
+            steps.append(step)
             next_group += 1
             added += 1
         self._save_all()
@@ -587,9 +593,34 @@ class ScenarioWindow(tk.Toplevel):
         menu.add_command(label="HTML Report", command=lambda: self._export_report("html"))
         menu.add_command(label="CSV Results", command=lambda: self._export_report("csv"))
         menu.add_command(label="JUnit XML", command=lambda: self._export_report("xml"))
+        menu.add_separator()
+        menu.add_command(label="Scenario JSON (chạy bằng cli.py / CI)", command=self._export_scenario_json)
         x = self.export_btn.winfo_rootx()
         y = self.export_btn.winfo_rooty() + self.export_btn.winfo_height()
         menu.tk_popup(x, y)
+
+    def _export_scenario_json(self) -> None:
+        """Lưu scenario hiện tại ra file để commit vào repo và chạy: python cli.py run --file <file>."""
+        self._save_current_editor()
+        scenario = self._current_scenario()
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(scenario.get("name", "scenario"))).strip("-.") or "scenario"
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Scenario JSON",
+            initialfile=f"{safe_name}.scenario.json",
+            defaultextension=".json",
+            filetypes=[("Scenario JSON", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(scenario, fh, ensure_ascii=False, indent=2)
+        except OSError as exc:
+            messagebox.showerror("Export Scenario", str(exc), parent=self)
+            return
+        self._log(f"Exported scenario JSON: {path}", "ok")
+        self._log(f'Chạy trên CI: python cli.py run --file "{path}" --env <ENV> --report junit.xml', "dim")
 
     def _export_report(self, extension: str) -> None:
         if self.running:

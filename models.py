@@ -7,12 +7,13 @@ class RequestTab:
     """Lưu toàn bộ state của 1 tab request (curl, options, response...)."""
     _counter = 0
 
-    def __init__(self, name: str | None = None, curl: str = "", pre_script: str = ""):
+    def __init__(self, name: str | None = None, curl: str = "", pre_script: str = "", tests: str = ""):
         RequestTab._counter += 1
         self.id         = str(uuid.uuid4())[:8]
         self.name       = name or f"Tab {RequestTab._counter}"
         self.curl       = curl
         self.pre_script = pre_script
+        self.tests      = tests      # assertion + extractor chạy sau khi có response
         self.builder_method = "GET"
         self.builder_url = ""
         self.builder_headers = ""
@@ -27,11 +28,14 @@ class RequestTab:
         self.detected_enc = ""
         self.pre_logs: list[str] = []
         self.ai_analysis  = ""
+        self.test_results: list[str] = []
+        self.test_ok: bool | None = None   # None = không có test
 
         # Widget references — được set bởi UI khi build tab content
         self._frame       = None   # tk.Frame
         self._curl_tw     = None   # tk.Text
         self._pre_tw      = None   # tk.Text
+        self._tests_tw    = None   # tk.Text
         self._request_frame = None # tk.Frame
         self._method_var  = None   # tk.StringVar
         self._url_var     = None   # tk.StringVar

@@ -34,6 +34,7 @@ from core import (
     OLLAMA_DEFAULT_BASE_URL,
 )
 import store
+from scenario_engine import evaluate_assertions, extract_values, join_test_rules, split_test_rules
 from ui_compare import CurlCompareWindow
 from ui_converter import ConverterWindow
 from ui_ollama_setup import OllamaSetupWindow
@@ -71,11 +72,13 @@ class CurlRunnerApp(tk.Tk):
         self.info_tw:     tk.Text  = None  # type: ignore
         self.log_tw:      tk.Text  = None  # type: ignore
         self.ai_tw:       tk.Text  = None  # type: ignore
+        self.tests_tw:    tk.Text  = None  # type: ignore
         self.body_frame:    tk.Frame = None  # type: ignore
         self.headers_frame: tk.Frame = None  # type: ignore
         self.info_frame:    tk.Frame = None  # type: ignore
         self.log_frame:     tk.Frame = None  # type: ignore
         self.ai_frame:      tk.Frame = None  # type: ignore
+        self.tests_frame:   tk.Frame = None  # type: ignore
         self.stab_history:     tk.Button = None  # type: ignore
         self.stab_collections: tk.Button = None  # type: ignore
         self.rtab_body:    tk.Button = None  # type: ignore
@@ -83,6 +86,7 @@ class CurlRunnerApp(tk.Tk):
         self.rtab_info:    tk.Button = None  # type: ignore
         self.rtab_log:     tk.Button = None  # type: ignore
         self.rtab_ai:      tk.Button = None  # type: ignore
+        self.rtab_tests:   tk.Button = None  # type: ignore
         self.ai_analyze_btn: tk.Button = None  # type: ignore
         self.ai_status_lbl: tk.Label = None  # type: ignore
         self.ollama_setup_win: tk.Toplevel = None  # type: ignore
@@ -340,7 +344,7 @@ class CurlRunnerApp(tk.Tk):
         col_name, item_id = vals[0], vals[1]
         for it in self.collections.get(col_name,[]):
             if it["id"] == item_id:
-                self._set_curl(it["curl"]); return
+                self._set_curl(it["curl"], tests=self._item_tests(it)); return
 
     def _coll_ctx(self, event):
         iid = self.coll_tree.identify_row(event.y)
@@ -368,7 +372,7 @@ class CurlRunnerApp(tk.Tk):
     def _open_coll_item_new_tab(self, col_name, item_id):
         for it in self.collections.get(col_name,[]):
             if it["id"] == item_id:
-                self._new_tab(curl=it["curl"], name=it.get("name"))
+                self._new_tab(curl=it["curl"], name=it.get("name"), tests=self._item_tests(it))
                 return
 
     def _new_collection(self):
@@ -378,7 +382,10 @@ class CurlRunnerApp(tk.Tk):
             store.save_collections(self.collections)
             self._refresh_collection_tree()
 
-    def _save_to_coll_dialog(self, curl_str):
+    def _item_tests(self, item: dict) -> str:
+        return join_test_rules(item.get("extractors", ""), item.get("assertions", ""))
+
+    def _save_to_coll_dialog(self, curl_str, tests: str = ""):
         if not curl_str: return
         if not self.collections:
             if messagebox.askyesno("Chưa có Collection","Tạo mới?"):
@@ -403,10 +410,14 @@ class CurlRunnerApp(tk.Tk):
             name = name_e.get().strip() or "New Request"
             try:    method = parse_curl(curl_str).get("method","GET")
             except: method = "GET"
-            self.collections[col].append({
+            item = {
                 "id": str(uuid.uuid4())[:8], "name": name,
                 "method": method, "curl": curl_str
-            })
+            }
+            extractors, assertions = split_test_rules(tests)
+            if extractors: item["extractors"] = extractors
+            if assertions: item["assertions"] = assertions
+            self.collections[col].append(item)
             store.save_collections(self.collections)
             self._refresh_collection_tree()
             win.destroy()
@@ -779,6 +790,31 @@ class CurlRunnerApp(tk.Tk):
             tw.config(fg=TEXT) if tw.get("1.0","end").strip().startswith("#") else None
         ))
 
+        # ── Tests tab: assertion + lưu biến từ response
+        tests_frame = tk.Frame(nb, bg=BG2)
+        nb.add(tests_frame, text="  ✅ Tests  ")
+        tests_hdr = tk.Frame(tests_frame, bg=BG2)
+        tests_hdr.pack(fill="x", padx=8, pady=(6,2))
+        tk.Label(tests_hdr,
+                 text="Kiểm tra response sau khi gửi. Dòng `ten = json:$.path` lưu giá trị vào environment đang chọn.",
+                 font=self.fn_small, bg=BG2, fg=TEXT_DIM).pack(side="left")
+        self._mkbtn(tests_hdr, "📋 Ví dụ",
+                    lambda t=tab: self._insert_tests_example(t),
+                    side="right")
+        tests_wrap = tk.Frame(tests_frame, bg=BORDER)
+        tests_wrap.pack(fill="both", expand=True, padx=8, pady=(2,4))
+        tests_tw = tk.Text(tests_wrap, bg=CODE_BG, fg=TEXT, insertbackground=ACCENT,
+                           font=self.fn_mono, wrap="none", relief="flat",
+                           padx=10, pady=8, selectbackground=ACCENT,
+                           selectforeground=ACTIVE_TEXT, undo=True, bd=0)
+        sb_t = tk.Scrollbar(tests_wrap, command=tests_tw.yview, bg=BG3, troughcolor=BG2, bd=0)
+        tests_tw.configure(yscrollcommand=sb_t.set)
+        sb_t.pack(side="right", fill="y")
+        tests_tw.pack(fill="both", expand=True)
+        if tab.tests:
+            tests_tw.insert("1.0", tab.tests)
+        tab._tests_tw = tests_tw
+
         tab._nb = nb
         if tab.curl:
             self._parse_curl_to_builder(tab, switch=True, force=True, show_status=False)
@@ -826,8 +862,8 @@ class CurlRunnerApp(tk.Tk):
         return frame
 
     # ── Tab bar management ────────────────────
-    def _new_tab(self, curl="", name=None, pre_script=""):
-        tab = RequestTab(name=name, curl=curl, pre_script=pre_script)
+    def _new_tab(self, curl="", name=None, pre_script="", tests=""):
+        tab = RequestTab(name=name, curl=curl, pre_script=pre_script, tests=tests)
         self.tabs.append(tab)
         self._render_tab_bar()
         self._switch_tab(len(self.tabs)-1)
@@ -900,6 +936,7 @@ class CurlRunnerApp(tk.Tk):
         tab.builder_dirty = getattr(tab, "_builder_dirty", False)
         if hasattr(tab, "_pre_tw"):
             tab.pre_script = tab._pre_tw.get("1.0","end").strip()
+        tab.tests = self._current_tests(tab)
 
     def _close_tab(self, idx):
         if len(self.tabs) <= 1: return
@@ -1283,11 +1320,15 @@ class CurlRunnerApp(tk.Tk):
             raise ValueError("Vui lòng nhập curl command hoặc URL trong Request tab.")
         return parse_curl(apply_env(raw, env)), raw
 
-    def _set_curl(self, curl_str):
-        """Load curl vào tab đang active."""
+    def _set_curl(self, curl_str, tests: str | None = None):
+        """Load curl (và Tests nếu có) vào tab đang active."""
         if self.active_tab_idx < 0: return
         tab = self.tabs[self.active_tab_idx]
         if not hasattr(tab,"_curl_tw"): return
+        if tests is not None and tab._tests_tw is not None:
+            tab._tests_tw.delete("1.0", "end")
+            tab._tests_tw.insert("1.0", tests)
+            tab.tests = tests
         self._clear_ph(tab)
         tab._curl_tw.delete("1.0","end")
         tab._curl_tw.insert("1.0", curl_str)
@@ -1377,6 +1418,72 @@ class CurlRunnerApp(tk.Tk):
             tab._pre_tw.insert("1.0", example)
             tab._pre_tw.config(fg=TEXT)
 
+    # ── Tests (assertion sau response) ────────
+    def _current_tests(self, tab) -> str:
+        tw = getattr(tab, "_tests_tw", None)
+        return tw.get("1.0", "end").strip() if tw is not None else (tab.tests or "")
+
+    def _insert_tests_example(self, tab):
+        example = (
+            "# Mỗi dòng 1 điều kiện, dừng ở dòng FAIL đầu tiên\n"
+            "status == 200\n"
+            "time < 1000\n"
+            "header Content-Type contains json\n"
+            "json $.data exists\n"
+            "# json $.data.items[0].id == {{user_id}}\n"
+            "# body not_contains error\n\n"
+            "# Lưu giá trị vào environment đang chọn, dùng lại bằng {{token}}\n"
+            "# token = json:$.data.token\n"
+            "# request_id = header:X-Request-Id\n"
+        )
+        if getattr(tab, "_tests_tw", None) is not None:
+            tab._tests_tw.delete("1.0", "end")
+            tab._tests_tw.insert("1.0", example)
+
+    def _run_request_tests(self, tab, resp, body_text: str, elapsed: float, env: dict) -> tuple[list[str], bool | None]:
+        """Chạy Tests của tab trên response. Trả về (dòng kết quả, True/False; None nếu không có test)."""
+        extract_rules, assert_rules = split_test_rules(self._current_tests(tab))
+        if not extract_rules and not assert_rules:
+            return [], None
+        lines: list[str] = []
+        ok = True
+        try:
+            if extract_rules:
+                values, logs = extract_values(apply_env(extract_rules, env), resp, body_text)
+                lines.extend(logs)
+                if values:
+                    target = self.environments.setdefault(self.active_env, {})
+                    target.update(values)
+                    store.save_environments(self.environments)
+                    lines.append(f"→ đã lưu vào environment '{self.active_env}': {', '.join(sorted(values))}")
+            if assert_rules:
+                passed, details = evaluate_assertions(apply_env(assert_rules, env), resp, body_text, elapsed)
+                lines.extend(details)
+                ok = passed
+        except Exception as exc:   # rule sai cú pháp, body không phải JSON...
+            lines.append(f"ERROR: {exc}")
+            ok = False
+        return lines, ok
+
+    def _write_tests(self, tab) -> None:
+        w = self.tests_tw
+        w.config(state="normal"); w.delete("1.0", "end")
+        if not tab.test_results:
+            w.insert("end", "  Chưa có test. Thêm điều kiện ở tab ✅ Tests của request (vd: status == 200).", "dim")
+        else:
+            for line in tab.test_results:
+                if line.startswith(("FAIL", "ERROR")):
+                    tag = "err"
+                elif line.startswith(("PASS", "→")):
+                    tag = "ok"
+                else:
+                    tag = "dim"
+                w.insert("end", f"  {line}\n", tag)
+        w.config(state="disabled")
+        if self.rtab_tests:
+            mark = "" if tab.test_ok is None else (" ✓" if tab.test_ok else " ✗")
+            self.rtab_tests.config(text=f"Tests{mark}")
+
     # ── Import file ───────────────────────────
     def _import_file(self, tab=None):
         if tab is None:
@@ -1443,7 +1550,7 @@ class CurlRunnerApp(tk.Tk):
         if not self.collections:
             if messagebox.askyesno("Chưa có Collection","Tạo mới?"):
                 self._new_collection()
-        self._save_to_coll_dialog(curl_str)
+        self._save_to_coll_dialog(curl_str, tests=self._current_tests(tab))
 
     # ── SEND ──────────────────────────────────
     def _get_repeat_count(self, tab) -> int:
@@ -1522,7 +1629,7 @@ class CurlRunnerApp(tk.Tk):
                     logs.append(f"🔁 Auto call complete: {repeat_count} request(s)")
                     logs.extend(repeat_logs)
                 self.after(0, lambda: self._display(
-                    tab, parsed, resp, elapsed, original_curl, logs, repeat_count
+                    tab, parsed, resp, elapsed, original_curl, logs, repeat_count, env
                 ))
             except Exception as e:
                 error_msg = str(e) or repr(e) or e.__class__.__name__
@@ -1572,7 +1679,8 @@ class CurlRunnerApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0,4))
         tr = tk.Frame(toolbar, bg=BORDER)
         tr.pack(side="left")
-        for lbl, val in [("Body","body"),("Headers","headers"),("Info","info"),("Log","log"),("AI","ai")]:
+        for lbl, val in [("Body","body"),("Headers","headers"),("Info","info"),("Log","log"),
+                         ("Tests","tests"),("AI","ai")]:
             btn = tk.Button(tr, text=lbl, font=self.fn_label,
                             bg=SURFACE_ACTIVE if val=="body" else BG3,
                             fg=ACTIVE_TEXT if val=="body" else TEXT_DIM,
@@ -1583,6 +1691,7 @@ class CurlRunnerApp(tk.Tk):
             elif val == "headers":  self.rtab_headers = btn
             elif val == "info":     self.rtab_info    = btn
             elif val == "log":      self.rtab_log     = btn
+            elif val == "tests":    self.rtab_tests   = btn
             elif val == "ai":       self.rtab_ai      = btn
 
         search = tk.Frame(frame, bg=BG3)
@@ -1621,6 +1730,7 @@ class CurlRunnerApp(tk.Tk):
         self._mk_text_tab("headers", self.fn_monos)
         self._mk_text_tab("info",    self.fn_monos)
         self._mk_text_tab("log",     self.fn_monos)
+        self._mk_text_tab("tests",   self.fn_monos)
         self._mk_text_tab("ai",      self.fn_monos)
 
         self.body_tw.tag_configure("key",   foreground=CYAN_C)
@@ -1640,7 +1750,10 @@ class CurlRunnerApp(tk.Tk):
         self.ai_tw.tag_configure("plain", foreground=TEXT)
         self.ai_tw.tag_configure("dim", foreground=TEXT_DIM)
         self.ai_tw.tag_configure("err", foreground=RED_C)
-        for tw in (self.body_tw, self.headers_tw, self.info_tw, self.log_tw, self.ai_tw):
+        self.tests_tw.tag_configure("ok",  foreground=GREEN)
+        self.tests_tw.tag_configure("err", foreground=RED_C)
+        self.tests_tw.tag_configure("dim", foreground=TEXT_DIM)
+        for tw in self._response_text_widgets():
             tw.tag_configure("search_match", background="#ffe4d6", foreground=TEXT)
             tw.tag_configure("search_current", background=ACCENT, foreground=ACTIVE_TEXT)
             tw.tag_raise("search_current")
@@ -1668,6 +1781,8 @@ class CurlRunnerApp(tk.Tk):
             self.info_frame = frame; self.info_tw = tw
         elif name == "log":
             self.log_frame = frame; self.log_tw = tw
+        elif name == "tests":
+            self.tests_frame = frame; self.tests_tw = tw
         elif name == "ai":
             self.ai_frame = frame; self.ai_tw = tw
 
@@ -1675,10 +1790,10 @@ class CurlRunnerApp(tk.Tk):
         self.active_resp_tab = val
         _frames = {"body": self.body_frame, "headers": self.headers_frame,
                    "info": self.info_frame, "log": self.log_frame,
-                   "ai": self.ai_frame}
+                   "tests": self.tests_frame, "ai": self.ai_frame}
         _btns   = {"body": self.rtab_body, "headers": self.rtab_headers,
                    "info": self.rtab_info, "log": self.rtab_log,
-                   "ai": self.rtab_ai}
+                   "tests": self.rtab_tests, "ai": self.rtab_ai}
         for v, frame in _frames.items():
             if frame: frame.pack_forget()
             btn = _btns.get(v)
@@ -1690,7 +1805,8 @@ class CurlRunnerApp(tk.Tk):
         self._schedule_response_search()
 
     def _response_text_widgets(self) -> list[tk.Text]:
-        return [w for w in (self.body_tw, self.headers_tw, self.info_tw, self.log_tw, self.ai_tw) if w]
+        return [w for w in (self.body_tw, self.headers_tw, self.info_tw, self.log_tw,
+                            self.tests_tw, self.ai_tw) if w]
 
     def _active_response_widget(self) -> tk.Text:
         return getattr(self, f"{self.active_resp_tab}_tw", self.body_tw)
@@ -1830,9 +1946,11 @@ class CurlRunnerApp(tk.Tk):
     def _clear_response_panel(self):
         self.status_badge.config(text="-", fg=TEXT_DIM, bg=BG3)
         self.time_label.config(text=""); self.size_label.config(text="")
-        for name in ("body","headers","info","log","ai"):
+        for name in ("body","headers","info","log","tests","ai"):
             w = getattr(self, f"{name}_tw")
             w.config(state="normal"); w.delete("1.0","end"); w.config(state="disabled")
+        if self.rtab_tests:
+            self.rtab_tests.config(text="Tests")
         self.response_matches = []
         self.response_match_index = -1
         self.response_match_overflow = False
@@ -1853,6 +1971,7 @@ class CurlRunnerApp(tk.Tk):
         self._write_headers(resp.headers)
         self._write_info(tab.parsed, resp, elapsed, tab.detected_enc)
         self._write_log(tab.pre_logs)
+        self._write_tests(tab)
         self._write_ai_analysis(tab.ai_analysis)
         self._schedule_response_search()
 
@@ -1860,7 +1979,8 @@ class CurlRunnerApp(tk.Tk):
     def _is_active_tab(self, tab) -> bool:
         return 0 <= self.active_tab_idx < len(self.tabs) and self.tabs[self.active_tab_idx] is tab
 
-    def _display(self, tab, parsed, resp, elapsed, original_curl, pre_logs, repeat_count: int = 1):
+    def _display(self, tab, parsed, resp, elapsed, original_curl, pre_logs, repeat_count: int = 1,
+                 env: dict | None = None):
         tab.response = resp
         tab.parsed   = parsed
         tab.elapsed  = elapsed
@@ -1872,6 +1992,7 @@ class CurlRunnerApp(tk.Tk):
 
         tab.body_text    = body_text
         tab.detected_enc = enc_info
+        tab.test_results, tab.test_ok = self._run_request_tests(tab, resp, body_text, elapsed, env or {})
 
         if tab in self.tabs:   # tab có thể đã bị đóng trong lúc request đang chạy
             tab._send_btn.config(state="normal", text="▶  SEND REQUEST")
@@ -1883,13 +2004,19 @@ class CurlRunnerApp(tk.Tk):
                 )
             else:
                 tab._status_lbl.config(text=f"✓  {parsed['method']}  →  {url_s}", fg=GREEN)
+            if tab.test_ok is not None:
+                current = tab._status_lbl.cget("text")
+                verdict = "Tests PASS" if tab.test_ok else "Tests FAIL"
+                tab._status_lbl.config(text=f"{current}  ·  {verdict}", fg=GREEN if tab.test_ok else RED_C)
 
         # Chỉ vẽ lên response panel dùng chung nếu tab này vẫn đang được chọn;
         # nếu không, response sẽ được hiển thị khi người dùng quay lại tab.
         if self._is_active_tab(tab):
             self._restore_response(tab)
-            # Auto-show Script Log tab if script ran
-            if pre_logs:
+            # Auto-show Script Log tab if script ran; test lỗi thì ưu tiên tab Tests
+            if tab.test_ok is False:
+                self._show_resp_tab("tests")
+            elif pre_logs:
                 self._show_resp_tab("log")
 
         # History

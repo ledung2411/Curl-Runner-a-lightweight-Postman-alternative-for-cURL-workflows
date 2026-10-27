@@ -106,6 +106,19 @@ def _lower_headers(resp) -> dict[str, str]:
     return {str(k).lower(): str(v) for k, v in dict(resp.headers).items()}
 
 
+def split_test_rules(text: str) -> tuple[str, str]:
+    """Ô Tests của request chứa lẫn extractor (`ten = json:...`) và assertion → tách ra 2 phần."""
+    extractors: list[str] = []
+    assertions: list[str] = []
+    for line in active_rule_lines(text):
+        (extractors if _EXTRACTOR_RE.match(line) else assertions).append(line)
+    return "\n".join(extractors), "\n".join(assertions)
+
+
+def join_test_rules(extractors: str, assertions: str) -> str:
+    return "\n".join(part for part in ((extractors or "").strip(), (assertions or "").strip()) if part)
+
+
 # ──────────────────────────────────────────────
 # Extractors / assertions
 # ──────────────────────────────────────────────
