@@ -6,6 +6,8 @@ Ví dụ:
   python cli.py run --scenario "Checkout Smoke" --env QA --report junit.xml
   python cli.py run --file ci/scenarios.json --env-file ci/envs.json --env QA --data users.csv
   python cli.py run --collection "Smoke" --env QA
+  python cli.py run --from postman_collection.json --env-file postman_env.json
+  python cli.py import my-bruno-collection/
   python cli.py request "curl https://api.test/health" --assert "status == 200"
   python cli.py list scenarios
 
@@ -24,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 import store
+from importers import import_path, merge_import
 from core import apply_env, decode_response, execute_request, parse_curl
 from scenario_engine import evaluate_assertions, extract_values, run_scenario, runnable_steps
 from scenario_report import build_scenario_report, export_scenario_report
@@ -213,9 +216,24 @@ def _step_printer(verbose: bool):
 # ──────────────────────────────────────────────
 # Commands
 # ──────────────────────────────────────────────
+def _import_or_fail(path: str):
+    try:
+        return import_path(path)
+    except (OSError, ValueError) as exc:
+        raise CliError(str(exc)) from exc
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     targets: list[dict] = []
-    if args.collection:
+    if args.source:
+        imported = _import_or_fail(args.source)
+        for note in imported.notes:
+            _print(f"  ! {note}", err=True)
+        available = [{"name": name, "items": items} for name, items in imported.collections.items()]
+        chosen = [_find_by_name(available, n, "collection") for n in args.collection] if args.collection else available
+        for match in chosen:
+            targets.append(_with_step_ids(collection_to_scenario(match["name"], match["items"])))
+    elif args.collection:
         collections = _load_json(Path(args.collections_file) if args.collections_file else store.COLL_FILE)
         if not isinstance(collections, dict):
             raise CliError("File collections không hợp lệ")
@@ -223,7 +241,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             items = [{"name": key, "items": value} for key, value in collections.items()]
             match = _find_by_name(items, name, "collection")
             targets.append(_with_step_ids(collection_to_scenario(match["name"], match["items"])))
-    if args.scenario or args.all or not args.collection:
+    if args.scenario or args.all or not (args.collection or args.source):
         scenarios = load_scenarios(Path(args.file) if args.file else store.SCEN_FILE)
         targets.extend(select_scenarios(scenarios, args.scenario or [], args.all))
 
@@ -338,6 +356,29 @@ def cmd_request(args: argparse.Namespace) -> int:
     return EXIT_OK if ok else EXIT_FAILED
 
 
+def cmd_import(args: argparse.Namespace) -> int:
+    result = _import_or_fail(args.path)
+    _print(f"Nguồn: {result.source} · {result.request_count} request · {len(result.environments)} environment")
+    for note in result.notes:
+        _print(f"  ! {note}")
+    if args.dry_run:
+        for name, items in result.collections.items():
+            _print(f"\n[{name}]")
+            for item in items:
+                tests = " (có Tests)" if item.get("assertions") or item.get("extractors") else ""
+                _print(f"  {item['method']:7} {item['name']}{tests}")
+        return EXIT_OK
+    collections = store.load_collections()
+    environments = store.load_environments()
+    created = merge_import(result, collections, environments)
+    store.save_collections(collections)
+    if result.environments:
+        store.save_environments(environments)
+    for line in created:
+        _print(f"  + {line}")
+    return EXIT_OK
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     if args.what == "scenarios":
         for scenario in load_scenarios(Path(args.file) if args.file else store.SCEN_FILE):
@@ -379,6 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--all", action="store_true", help="Chạy tất cả scenario trong file")
     run.add_argument("--file", help="File scenarios (mặc định ~/.curl_runner/scenarios.json)")
     run.add_argument("-c", "--collection", action="append", help="Chạy collection như 1 scenario tuần tự")
+    run.add_argument("--from", dest="source", metavar="PATH",
+                     help="Chạy thẳng Postman collection / thư mục Bruno / HAR (không cần import)")
     run.add_argument("--collections-file", help="File collections (mặc định ~/.curl_runner/collections.json)")
     run.add_argument("--data", help="CSV/JSON: chạy lặp mỗi dòng 1 lần, cột = biến")
     run.add_argument("--report", action="append", metavar="PATH",
@@ -397,6 +440,11 @@ def build_parser() -> argparse.ArgumentParser:
     req.add_argument("--show", choices=("body", "headers", "all", "none"), default="body")
     add_env_options(req)
     req.set_defaults(func=cmd_request)
+
+    imp = sub.add_parser("import", help="Import Postman / Bruno / HAR vào collections & environments")
+    imp.add_argument("path", help="File .json/.har của Postman/HAR, file .bru hoặc thư mục Bruno")
+    imp.add_argument("--dry-run", action="store_true", help="Chỉ xem trước, không ghi dữ liệu")
+    imp.set_defaults(func=cmd_import)
 
     lst = sub.add_parser("list", help="Liệt kê scenarios / environments / collections")
     lst.add_argument("what", choices=("scenarios", "environments", "collections"))

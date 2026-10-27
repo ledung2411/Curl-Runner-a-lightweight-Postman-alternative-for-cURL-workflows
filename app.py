@@ -34,6 +34,7 @@ from core import (
     OLLAMA_DEFAULT_BASE_URL,
 )
 import store
+from importers import import_path, merge_import
 from scenario_engine import evaluate_assertions, extract_values, join_test_rules, split_test_rules
 from ui_compare import CurlCompareWindow
 from ui_converter import ConverterWindow
@@ -305,6 +306,7 @@ class CurlRunnerApp(tk.Tk):
         bf = tk.Frame(parent, bg=SIDEBAR)
         bf.pack(fill="x", padx=6, pady=(6,2))
         self._mkbtn(bf, "＋ New Collection", self._new_collection)
+        self.import_btn = self._mkbtn(bf, "⇪ Import", self._show_import_menu, pad=(6,0))
 
         tf = tk.Frame(parent, bg=SIDEBAR)
         tf.pack(fill="both", expand=True, padx=6, pady=2)
@@ -322,6 +324,48 @@ class CurlRunnerApp(tk.Tk):
         self.coll_tree.pack(fill="both", expand=True)
         self.coll_tree.bind("<Double-Button-1>", self._load_from_collection)
         self.coll_tree.bind("<Button-3>",        self._coll_ctx)
+
+    def _show_import_menu(self):
+        m = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, activebackground=ACCENT)
+        m.add_command(label="Postman collection / environment, HAR (file)...",
+                      command=self._import_file_dialog)
+        m.add_command(label="Bruno collection (thư mục)...",
+                      command=self._import_folder_dialog)
+        m.tk_popup(self.import_btn.winfo_rootx(),
+                   self.import_btn.winfo_rooty() + self.import_btn.winfo_height())
+
+    def _import_file_dialog(self):
+        path = filedialog.askopenfilename(
+            parent=self, title="Import Postman / HAR / Bruno",
+            filetypes=[("Postman / HAR", "*.json *.har"), ("Bruno request", "*.bru"), ("All", "*.*")])
+        if path:
+            self._import_from_path(path)
+
+    def _import_folder_dialog(self):
+        path = filedialog.askdirectory(parent=self, title="Chọn thư mục Bruno collection")
+        if path:
+            self._import_from_path(path)
+
+    def _import_from_path(self, path: str):
+        try:
+            result = import_path(path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Import", str(exc), parent=self)
+            return
+        created = merge_import(result, self.collections, self.environments)
+        store.save_collections(self.collections)
+        if result.environments:
+            store.save_environments(self.environments)
+            self._refresh_env_selector()
+        self._refresh_collection_tree()
+        self._show_sidebar("collections")
+        lines = [f"Nguồn: {result.source} · {result.request_count} request", ""]
+        lines += [f"+ {line}" for line in created]
+        if result.notes:
+            lines += ["", "Lưu ý:"] + [f"• {note}" for note in result.notes[:12]]
+            if len(result.notes) > 12:
+                lines.append(f"• ... và {len(result.notes) - 12} lưu ý khác")
+        messagebox.showinfo("Import xong", "\n".join(lines), parent=self)
 
     def _refresh_collection_tree(self):
         self.coll_tree.delete(*self.coll_tree.get_children())
